@@ -238,13 +238,12 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	csrf := html.EscapeString(session.CSRF)
-	var body strings.Builder
-	fmt.Fprintf(&body, `<p>signed in as <b>%s</b> · <form method="post" action="/logout" style="display:inline">%s<button type="submit" class="link">log out</button></form></p>`,
-		html.EscapeString(session.User.Email), csrfField(csrf))
+	resource := html.EscapeString(h.provider.resourceURL)
 
-	body.WriteString(`<h2>chatgpt accounts</h2>`)
+	// --- accounts pane ---
+	var accountsPane strings.Builder
 	if len(accounts) == 0 {
-		body.WriteString(`<p class="err">no chatgpt account linked yet. image generation will fail until you add one.</p>`)
+		accountsPane.WriteString(`<p class="err">no chatgpt account linked yet. image generation will fail until you add one.</p>`)
 	} else {
 		for _, a := range accounts {
 			badge := ""
@@ -265,44 +264,73 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				usageHTML = renderUsage(usage)
 			}
 
-			fmt.Fprintf(&body, `<div class="acct"><div class="acct-hd"><b>%s</b> <span class="muted">%s%s</span></div>%s<div class="acct-ft">%s</div></div>`,
+			fmt.Fprintf(&accountsPane, `<div class="acct"><div class="acct-hd"><b>%s</b> <span class="muted">%s%s</span></div>%s<div class="acct-ft">%s</div></div>`,
 				html.EscapeString(orUnknown(a.Email)), html.EscapeString(orUnknown(a.PlanType)), badge, usageHTML, actions)
 		}
 	}
-	fmt.Fprintf(&body, `<form method="post" action="/link/start">%s<button type="submit">link a chatgpt account</button></form>`, csrfField(csrf))
+	fmt.Fprintf(&accountsPane, `<form method="post" action="/link/start">%s<button type="submit">link a chatgpt account</button></form>`, csrfField(csrf))
 
-	body.WriteString(`<h2>access keys</h2><p>use as <code>Authorization: Bearer &lt;key&gt;</code>, or add the server to an mcp client and log in through the browser.</p>`)
+	// --- access keys pane ---
+	var keysPane strings.Builder
+	keysPane.WriteString(`<p class="muted">optional. most clients use the browser oauth flow (see connect). a key lets scripts or a client config authenticate with <code>Authorization: Bearer &lt;key&gt;</code>.</p>`)
 	if len(keys) > 0 {
-		body.WriteString(`<table><tr><th>key</th><th>name</th><th>created</th><th></th></tr>`)
+		keysPane.WriteString(`<table><tr><th>key</th><th>name</th><th>created</th><th></th></tr>`)
 		for _, k := range keys {
-			fmt.Fprintf(&body, `<tr><td><code>%s…</code></td><td>%s</td><td>%s</td><td><form method="post" action="/keys/remove" style="display:inline">%s<input type="hidden" name="id" value="%s"><button type="submit" class="link danger">revoke</button></form></td></tr>`,
+			fmt.Fprintf(&keysPane, `<tr><td><code>%s…</code></td><td>%s</td><td>%s</td><td><form method="post" action="/keys/remove" style="display:inline">%s<input type="hidden" name="id" value="%s"><button type="submit" class="link danger">revoke</button></form></td></tr>`,
 				html.EscapeString(k.Prefix), html.EscapeString(k.Name), html.EscapeString(shortDate(k.CreatedAt)),
 				csrfField(csrf), html.EscapeString(k.ID))
 		}
-		body.WriteString(`</table>`)
+		keysPane.WriteString(`</table>`)
 	}
-	fmt.Fprintf(&body, `<form method="post" action="/keys/create">%s<input type="text" name="name" placeholder="key name (optional)"><button type="submit">new access key</button></form>`, csrfField(csrf))
-	fmt.Fprintf(&body, `<p><form method="post" action="/tokens/revoke" onsubmit="return confirm('sign out all mcp clients? they will have to authorize again.')">%s<button type="submit" class="link danger">revoke all mcp tokens</button></form></p>`, csrfField(csrf))
+	fmt.Fprintf(&keysPane, `<form method="post" action="/keys/create">%s<input type="text" name="name" placeholder="key name (optional)"><button type="submit">new access key</button></form>`, csrfField(csrf))
+	fmt.Fprintf(&keysPane, `<p><form method="post" action="/tokens/revoke" onsubmit="return confirm('sign out all mcp clients? they will have to authorize again.')">%s<button type="submit" class="link danger">revoke all mcp tokens</button></form></p>`, csrfField(csrf))
 
-	body.WriteString(`<h2>generated assets</h2>`)
+	// --- connect pane ---
+	connectPane := `<p>point any mcp client at this url and it walks you through login in the browser:</p>
+<p><code>claude mcp add --transport http pintr ` + resource + `</code></p>
+<p class="muted">the first time it connects, your browser opens; you log in to pintr and click allow, and the client gets its own token (auto-refreshed). works in claude code, claude desktop (custom connector), codex, etc.</p>
+<h2>use an access key instead (no oauth)</h2>
+<p>create a key in the access keys tab, then pass it as a header:</p>
+<p><code>claude mcp add --transport http pintr ` + resource + ` --header "Authorization: Bearer pintr_YOURKEY"</code></p>`
+
+	// --- data pane (assets + danger zone) ---
+	var dataPane strings.Builder
+	dataPane.WriteString(`<h2>generated assets</h2>`)
 	if h.assets == nil {
-		body.WriteString(`<p>asset storage is not configured on this server.</p>`)
+		dataPane.WriteString(`<p>asset storage is not configured on this server.</p>`)
 	} else {
 		count, err := h.assets.countAssets(r.Context(), session.User.ID)
 		if err != nil {
 			log.Printf("dashboard: count assets: %v", err)
-			body.WriteString(`<p>your generated images are stored encrypted. the decryption keys are only returned when an image is generated and are never saved here, so they can't be viewed from this page.</p>`)
+			dataPane.WriteString(`<p>your generated images are stored encrypted. decryption keys are only returned at generation time and never saved here, so images can't be viewed from this page.</p>`)
 		} else {
-			fmt.Fprintf(&body, `<p>%d encrypted image(s) stored. decryption keys are only returned at generation time and never saved here, so images can't be viewed from this page.</p>`, count)
+			fmt.Fprintf(&dataPane, `<p>%d encrypted image(s) stored. decryption keys are only returned at generation time and never saved here, so images can't be viewed from this page.</p>`, count)
 		}
-		fmt.Fprintf(&body, `<form method="post" action="/assets/purge" onsubmit="return confirm('permanently delete ALL your stored images? this cannot be undone.')">%s<button type="submit" class="link danger">delete all assets</button></form>`, csrfField(csrf))
+		fmt.Fprintf(&dataPane, `<form method="post" action="/assets/purge" onsubmit="return confirm('permanently delete ALL your stored images? this cannot be undone.')">%s<button type="submit" class="link danger">delete all assets</button></form>`, csrfField(csrf))
 	}
-
-	body.WriteString(`<h2>connect an mcp client</h2><p>point your client at <code>` + html.EscapeString(h.provider.resourceURL) + `</code> and it will walk you through login. for example:</p><p><code>claude mcp add --transport http pintr ` + html.EscapeString(h.provider.resourceURL) + `</code></p>`)
-
-	fmt.Fprintf(&body, `<h2 class="danger">danger zone</h2>
-<p>delete your account and <b>everything</b> tied to it — linked chatgpt accounts, access keys, sessions, and all stored images. this is permanent and cannot be undone.</p>
+	fmt.Fprintf(&dataPane, `<h2 class="danger">danger zone</h2>
+<p>delete your account and <b>everything</b> tied to it — linked chatgpt accounts, access keys, sessions, and all stored images. permanent, cannot be undone.</p>
 <form method="post" action="/account/delete" onsubmit="return confirm('Delete your account and ALL data permanently? This cannot be undone.')">%s<button type="submit" class="danger-btn">delete my account</button></form>`, csrfField(csrf))
+
+	var body strings.Builder
+	fmt.Fprintf(&body, `<p class="muted">signed in as <b>%s</b> · <form method="post" action="/logout" style="display:inline">%s<button type="submit" class="link">log out</button></form></p>`,
+		html.EscapeString(session.User.Email), csrfField(csrf))
+	body.WriteString(`<div class="tabs">
+<input type="radio" name="dtab" id="t-accounts" checked>
+<input type="radio" name="dtab" id="t-keys">
+<input type="radio" name="dtab" id="t-connect">
+<input type="radio" name="dtab" id="t-data">
+<nav class="tabbar">
+<label for="t-accounts">chatgpt accounts</label>
+<label for="t-keys">access keys</label>
+<label for="t-connect">connect</label>
+<label for="t-data">data</label>
+</nav>`)
+	fmt.Fprintf(&body, `<section class="tabpane" id="p-accounts">%s</section>`, accountsPane.String())
+	fmt.Fprintf(&body, `<section class="tabpane" id="p-keys">%s</section>`, keysPane.String())
+	fmt.Fprintf(&body, `<section class="tabpane" id="p-connect">%s</section>`, connectPane)
+	fmt.Fprintf(&body, `<section class="tabpane" id="p-data">%s</section>`, dataPane.String())
+	body.WriteString(`</div>`)
 
 	renderPage(w, "pintr dashboard", body.String())
 }
@@ -643,11 +671,19 @@ const pageShell = `<!doctype html>
 *{box-sizing:border-box}
 body{background:#0f0f10;color:#e7e7e7;font-family:system-ui,sans-serif;margin:0;line-height:1.55}
 header{border-bottom:1px solid #222;background:#121214}
-header .bar{max-width:64rem;margin:0 auto;padding:1rem 1.5rem;display:flex;align-items:baseline;gap:.9rem;flex-wrap:wrap}
-.brand{font-size:1.3rem;font-weight:700;letter-spacing:-.01em;text-decoration:none;color:#fff}
-.brand b{color:#63b3ed}
+header .bar{max-width:64rem;margin:0 auto;padding:.85rem 1.5rem;display:flex;justify-content:flex-start;align-items:center;gap:.75rem;flex-wrap:wrap}
+.brand{font-size:1.25rem;font-weight:700;letter-spacing:-.01em;text-decoration:none;color:#fff;line-height:1.2}
+.brand b{color:#63b3ed;font-weight:700}
 .tag{color:#8a8a8a;font-size:.85rem}
-main{max-width:64rem;margin:0 auto;padding:2rem 1.5rem}
+main{max-width:64rem;margin:0 auto;padding:1.8rem 1.5rem}
+.tabbar{display:flex;gap:.15rem;border-bottom:1px solid #262626;margin:1.1rem 0 1.4rem;flex-wrap:wrap}
+.tabbar label{padding:.5rem .9rem;cursor:pointer;color:#9a9a9a;border-bottom:2px solid transparent;font-size:.9rem;margin-bottom:-1px}
+.tabbar label:hover{color:#e7e7e7}
+.tabs>input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.tabpane{display:none}
+.tabpane h2:first-child{margin-top:.4rem}
+#t-accounts:checked~#p-accounts,#t-keys:checked~#p-keys,#t-connect:checked~#p-connect,#t-data:checked~#p-data{display:block}
+#t-accounts:checked~.tabbar label[for=t-accounts],#t-keys:checked~.tabbar label[for=t-keys],#t-connect:checked~.tabbar label[for=t-connect],#t-data:checked~.tabbar label[for=t-data]{color:#fff;border-bottom-color:#2b6cb0}
 h2{font-size:1rem;margin:2.2rem 0 .6rem;color:#bdbdbd}
 h3{margin:0 0 .3rem;font-size:.95rem}
 .lead{font-size:1.1rem;color:#d4d4d4;max-width:44rem}
