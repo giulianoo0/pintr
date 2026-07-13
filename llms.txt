@@ -1,0 +1,122 @@
+# pintr
+
+> pintr generates images with the Codex image model (GPT Image, gpt-5.6-terra)
+> using your own ChatGPT login, and exposes it over the Model Context Protocol
+> (MCP). It runs as a hosted multi-user service and as a local stdio server.
+
+- Source: https://github.com/giulianoo0/pintr
+- Hosted service: https://pintr.giuli.dev
+- MCP endpoint: https://pintr.giuli.dev/mcp
+- License / contributing: see the repo (LLM contributions welcome, human-reviewed)
+
+pintr never asks for an API key. You sign in with a ChatGPT account through
+OAuth; the driver model is fixed server-side (gpt-5.6-terra) so callers cannot
+pass a different or bogus model.
+
+## Modes
+
+- **Hosted (HTTP, multi-user):** users register (email + password), link one or
+  more ChatGPT accounts from a dashboard, and connect MCP clients via the
+  standard MCP OAuth flow. Generated images and reference uploads are encrypted
+  at rest in S3-compatible storage (Cloudflare R2). This is https://pintr.giuli.dev.
+- **Local (stdio, single user):** the client starts the pintr binary; it logs in
+  with a local browser flow and saves tokens to `~/.config/pintr/auth.json`.
+  Generated images are written to a pintr-chosen cache path returned as `saved_path`.
+
+## Connecting an MCP client
+
+Point the client at the MCP endpoint by URL; no token is pasted into config:
+
+```
+claude mcp add --transport http pintr https://pintr.giuli.dev/mcp
+```
+
+On first use the client gets a 401, discovers the OAuth endpoints, and opens the
+browser. You log in to pintr and click allow; the client receives its own token
+(auto-refreshed). Any MCP client with remote support works (Claude Code, Claude
+Desktop custom connector, Codex). Scripts can send a personal access key
+directly: `Authorization: Bearer pintr_...`.
+
+## MCP tools
+
+### generate_image
+Generate an image. Input:
+- `prompt` (string, required) — the full image prompt.
+- `reference_images` (string[], optional) — images to anchor a character or
+  style. Hosted: upload each via POST /upload and pass the returned `ref_...`
+  handle (a data: URL or base64 also works for small images). Stdio: file paths.
+  References are sent to Codex for the one request and never stored; hosted
+  uploads are deleted immediately after use.
+
+Result (hosted): `asset_url` (presigned ciphertext), `decrypted_asset_url` (open
+in a browser to view the decrypted PNG), `decryption_key`, `mime_type`, `model`,
+`account`, `duration_ms`, `size_bytes`, and `usage` (the account's remaining
+rate limits). Always open `decrypted_asset_url` to view the result.
+Result (stdio): `saved_path` plus the same metadata.
+
+### get_usage
+Return the remaining Codex rate limits for the linked account(s): the 5h, weekly
+and monthly windows (only the ones OpenAI currently exposes), each with used and
+remaining percent. Result: `{ "accounts": [ { account, plan_type, windows:[{label, used_percent, remaining_percent, resets_at}] } ] }`.
+
+## HTTP endpoints
+
+MCP + OAuth (RFC 9728 protected-resource metadata, RFC 8414 AS metadata, RFC
+7591 dynamic client registration, authorization-code + PKCE, RFC 8707 audience):
+
+- `POST /mcp` — MCP streamable HTTP endpoint (bearer required; OAuth access token
+  or `pintr_...` access key). Returns 401 with `WWW-Authenticate` when unauthed.
+- `GET /.well-known/oauth-protected-resource` (and `/.well-known/oauth-protected-resource/mcp`) — resource metadata.
+- `GET /.well-known/oauth-authorization-server` — authorization server metadata.
+- `POST /register` — dynamic client registration.
+- `GET|POST /authorize` — authorization endpoint (requires a logged-in session; shows a consent page).
+- `POST /token` — token endpoint (authorization_code and refresh_token grants).
+
+Assets (all content encrypted at rest; keys are returned once and never stored):
+
+- `POST /upload` — bearer-authed. Upload a raw reference image; the server
+  encrypts it, stores only ciphertext, and returns `{ "ref": "ref_<id>.<key>" }`.
+  Pass that handle in `generate_image`; it is fetched, decrypted, and deleted
+  from storage on use. Max 25 MiB; body must be an image.
+- `GET /view?o=<objectKey>&k=<key>` — fetches a stored ciphertext, decrypts it
+  server-side, and returns the raw image (`image/png`). This is what
+  `decrypted_asset_url` points to.
+
+Dashboard (browser, session cookie + CSRF):
+
+- `GET /` — landing (redirects to /dashboard when signed in).
+- `GET|POST /signup` — create an account (no key is minted at signup).
+- `GET|POST /login`, `POST /logout` — session auth.
+- `GET /dashboard` — manage linked ChatGPT accounts (with rate-limit bars),
+  access keys, stored assets, and account deletion.
+- `POST /link/start`, `POST /link/finish` — link a ChatGPT account (browser paste flow).
+- `POST /accounts/default`, `POST /accounts/remove` — manage linked accounts.
+- `POST /keys/create`, `POST /keys/remove` — personal access keys.
+- `POST /tokens/revoke` — invalidate all issued OAuth tokens (per-user kill switch).
+- `POST /assets/purge` — delete all stored images (and uploads) for the user.
+- `POST /account/delete` — permanently delete the account and everything it owns
+  (linked accounts, keys, sessions, and all stored objects in S3).
+- `GET /llms.txt` — this document.
+
+## Encryption model
+
+- ChatGPT tokens are stored encrypted at rest (AES-256-GCM, key derived from the
+  server secret which lives only in the environment). Passwords use argon2id.
+- Each generated image and each reference upload is encrypted under a *fresh
+  random AES-256-GCM key*. Only ciphertext is stored; the key is returned once in
+  the response (or embedded in the upload handle) and never persisted. The bucket
+  and pintr itself only ever hold ciphertext they cannot read.
+- The encryption protects data at rest (bucket operator, backups, a stolen DB),
+  not against a compromised pintr process — pintr necessarily sees each image in
+  memory at creation time.
+
+## Self-hosting
+
+Environment (see `.env.example`): `PINTR_PUBLIC_URL`, `PINTR_DB` (SQLite),
+`PINTR_SECRET` (>= 32 random chars; signs tokens and encrypts stored
+credentials — keep it stable), and `PINTR_S3_*` (`PINTR_S3_ENDPOINT`,
+`PINTR_S3_BUCKET`, `PINTR_S3_ACCESS_KEY_ID`, `PINTR_S3_SECRET_ACCESS_KEY`,
+`PINTR_S3_REGION`, and optional `PINTR_S3_PUBLIC_BASE` for a bucket-bound custom
+domain). Run with `pintr -http 127.0.0.1:8090` behind an HTTPS reverse proxy
+with response buffering off. Without `PINTR_S3_*` the server runs but image
+generation is disabled.

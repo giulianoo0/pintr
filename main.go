@@ -324,6 +324,7 @@ func serveHTTP(addr string) {
 	mux.HandleFunc("/account/delete", web.handleDeleteAccount)
 	mux.HandleFunc("/upload", web.handleUpload)
 	mux.HandleFunc("/view", web.handleView)
+	mux.HandleFunc("/llms.txt", handleLLMs)
 	mux.HandleFunc("/", web.handleIndex)
 
 	httpServer := &http.Server{

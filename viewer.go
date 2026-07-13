@@ -1,10 +1,21 @@
 package main
 
 import (
+	_ "embed"
 	"net/http"
 	"net/url"
 	"strings"
 )
+
+//go:embed llms.txt
+var llmsTxt string
+
+// handleLLMs serves the project's llms.txt (endpoints and behavior for LLMs).
+func handleLLMs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	_, _ = w.Write([]byte(llmsTxt))
+}
 
 // decryptedAssetURL builds a link that returns the decrypted image directly.
 // The object key and the decryption key travel as query params so an agent that
