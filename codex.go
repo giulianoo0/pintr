@@ -32,35 +32,36 @@ const (
 // a cookie jar before posting (same trick crevn uses).
 var cookiePrimeURLs = []string{"https://chatgpt.com/", "https://chat.openai.com/"}
 
-// generateImageArgs is the MCP tool input. There is deliberately no model
-// field (the driver model is fixed server-side) and no server output path — the
-// hosted server never writes to a caller-chosen path.
+// generateImageArgs is the MCP tool input. There is deliberately no model field
+// (fixed server-side) and no output path (the client never chooses where the
+// server writes) — delivery is decided by the server per mode.
 type generateImageArgs struct {
 	Prompt          string   `json:"prompt" jsonschema:"the full image prompt to render"`
-	OutputPath      string   `json:"output_path,omitempty" jsonschema:"local (stdio) mode only: absolute path to save the PNG. Ignored by the hosted server."`
 	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images sent with the prompt, each a base64 string or a data: URL (hosted), or a local file path (stdio mode). Not stored anywhere."`
 }
 
 type generateImageResult struct {
-	AssetURL          string `json:"asset_url,omitempty"`
-	DecryptedAssetURL string `json:"decrypted_asset_url,omitempty"`
-	DecryptionKey     string `json:"decryption_key,omitempty"`
-	MimeType          string `json:"mime_type,omitempty"`
-	SavedPath         string `json:"saved_path,omitempty"`
-	Model             string `json:"model"`
-	Account           string `json:"account"`
-	DurationMs        int64  `json:"duration_ms"`
-	SizeBytes         int    `json:"size_bytes,omitempty"`
+	AssetURL          string        `json:"asset_url,omitempty"`
+	DecryptedAssetURL string        `json:"decrypted_asset_url,omitempty"`
+	DecryptionKey     string        `json:"decryption_key,omitempty"`
+	MimeType          string        `json:"mime_type,omitempty"`
+	SavedPath         string        `json:"saved_path,omitempty"`
+	Model             string        `json:"model"`
+	Account           string        `json:"account"`
+	DurationMs        int64         `json:"duration_ms"`
+	SizeBytes         int           `json:"size_bytes,omitempty"`
+	Usage             *accountUsage `json:"usage,omitempty"`
 }
 
 // generatedImage is the raw result of a generation, before delivery. The caller
-// decides how to deliver it (write a local file in stdio mode, or encrypt and
+// decides how to deliver it (an inline/temp file in stdio mode, or encrypt and
 // upload in hosted mode).
 type generatedImage struct {
 	PNG        []byte
 	Model      string
 	Account    string
 	DurationMs int64
+	Usage      *accountUsage
 }
 
 // codexAuth is the minimal credential a single request needs.
@@ -163,7 +164,14 @@ func generateImage(ctx context.Context, accounts []codexAccount, prompt string, 
 		png, durationMs, err := runOneGeneration(ctx, account, body)
 		if err == nil {
 			logImage("ok account=%s duration_ms=%d bytes=%d", account.label(), durationMs, len(png))
-			return generatedImage{PNG: png, Model: model, Account: account.label(), DurationMs: durationMs}, nil
+			img := generatedImage{PNG: png, Model: model, Account: account.label(), DurationMs: durationMs}
+			// Best-effort: attach the account's remaining limits to the result.
+			if usage, uerr := fetchAccountUsage(ctx, account); uerr == nil {
+				img.Usage = &usage
+			} else {
+				logImage("usage fetch failed for %s: %v", account.label(), uerr)
+			}
+			return img, nil
 		}
 		lastErr = err
 		logImage("account=%s failed: %v", account.label(), err)

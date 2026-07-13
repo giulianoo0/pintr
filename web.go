@@ -250,22 +250,28 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if len(accounts) == 0 {
 		body.WriteString(`<p class="err">no chatgpt account linked yet. image generation will fail until you add one.</p>`)
 	} else {
-		body.WriteString(`<table><tr><th>account</th><th>plan</th><th></th><th></th></tr>`)
 		for _, a := range accounts {
 			badge := ""
 			if a.IsDefault {
-				badge = ` <span class="ok">(default)</span>`
+				badge = ` <span class="ok">· default</span>`
 			}
-			setDefault := ""
+			actions := ""
 			if !a.IsDefault {
-				setDefault = fmt.Sprintf(`<form method="post" action="/accounts/default" style="display:inline">%s<input type="hidden" name="id" value="%s"><button type="submit" class="link">make default</button></form>`,
+				actions += fmt.Sprintf(`<form method="post" action="/accounts/default" style="display:inline">%s<input type="hidden" name="id" value="%s"><button type="submit" class="link">make default</button></form> · `,
 					csrfField(csrf), html.EscapeString(a.ID))
 			}
-			fmt.Fprintf(&body, `<tr><td>%s%s</td><td>%s</td><td>%s</td><td><form method="post" action="/accounts/remove" style="display:inline" onsubmit="return confirm('remove this account?')">%s<input type="hidden" name="id" value="%s"><button type="submit" class="link danger">remove</button></form></td></tr>`,
-				html.EscapeString(orUnknown(a.Email)), badge, html.EscapeString(orUnknown(a.PlanType)), setDefault,
+			actions += fmt.Sprintf(`<form method="post" action="/accounts/remove" style="display:inline" onsubmit="return confirm('remove this account?')">%s<input type="hidden" name="id" value="%s"><button type="submit" class="link danger">remove</button></form>`,
 				csrfField(csrf), html.EscapeString(a.ID))
+
+			usageHTML := `<div class="limits">limits unavailable</div>`
+			account := dbAccount{store: h.store, userID: session.User.ID, rowID: a.ID, display: orUnknown(a.Email)}
+			if usage, uerr := fetchAccountUsage(r.Context(), account); uerr == nil {
+				usageHTML = renderUsage(usage)
+			}
+
+			fmt.Fprintf(&body, `<div class="acct"><div class="acct-hd"><b>%s</b> <span class="muted">%s%s</span></div>%s<div class="acct-ft">%s</div></div>`,
+				html.EscapeString(orUnknown(a.Email)), html.EscapeString(orUnknown(a.PlanType)), badge, usageHTML, actions)
 		}
-		body.WriteString(`</table>`)
 	}
 	fmt.Fprintf(&body, `<form method="post" action="/link/start">%s<button type="submit">link a chatgpt account</button></form>`, csrfField(csrf))
 
@@ -498,6 +504,30 @@ func csrfField(csrf string) string {
 	return `<input type="hidden" name="csrf" value="` + csrf + `">`
 }
 
+// renderUsage draws the account's remaining rate limits (5h / weekly / monthly,
+// whichever OpenAI exposes) as small bars.
+func renderUsage(usage accountUsage) string {
+	if len(usage.Windows) == 0 {
+		return `<div class="limits">no rate-limit data</div>`
+	}
+	var b strings.Builder
+	b.WriteString(`<div class="limits">`)
+	for _, w := range usage.Windows {
+		hue := "#4ade80" // green
+		switch {
+		case w.RemainingPercent <= 10:
+			hue = "#f87171" // red
+		case w.RemainingPercent <= 30:
+			hue = "#fbbf24" // amber
+		}
+		fmt.Fprintf(&b,
+			`<div class="lim"><span class="lim-k">%s</span><span class="bar"><span style="width:%.0f%%;background:%s"></span></span><span class="lim-v">%.0f%% left</span></div>`,
+			html.EscapeString(w.Label), w.RemainingPercent, hue, w.RemainingPercent)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
 // sanitizeNext only allows a clean same-origin path, preventing open redirects
 // after login. Backslashes are rejected because browsers normalize them to "/",
 // turning "/\evil.com" into the protocol-relative "//evil.com".
@@ -551,6 +581,16 @@ table{width:100%%;border-collapse:collapse;margin:.5rem 0}
 th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid #262626;font-size:.9rem}
 th{color:#888;font-weight:500}
 .err{color:#f87171}.ok{color:#4ade80}
+.muted{color:#888;font-size:.85rem}
 a{color:#63b3ed}
 code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-all}
+.acct{border:1px solid #262626;border-radius:8px;padding:.7rem .85rem;margin:.5rem 0;background:#151517}
+.acct-hd{margin-bottom:.4rem}
+.acct-ft{margin-top:.5rem;font-size:.85rem}
+.limits{display:flex;flex-wrap:wrap;gap:.3rem 1.2rem}
+.lim{display:flex;align-items:center;gap:.5rem;font-size:.8rem;color:#bbb}
+.lim-k{min-width:3.2rem;color:#888;text-transform:uppercase;letter-spacing:.03em;font-size:.72rem}
+.lim-v{min-width:4.5rem}
+.bar{display:inline-block;width:90px;height:6px;background:#2a2a2e;border-radius:3px;overflow:hidden}
+.bar>span{display:block;height:100%%}
 </style></head><body><main><h1>pintr</h1>%s</main></body></html>`

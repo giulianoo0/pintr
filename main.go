@@ -60,35 +60,66 @@ func main() {
 	if err := ensureLoggedIn(ctx, fileStore); err != nil {
 		log.Fatalf("auth: %v", err)
 	}
-	server := newMCPServer(stdioGenerate(fileStore))
+	server := newMCPServer(stdioGenerate(fileStore), stdioUsage(fileStore))
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("stdio server: %v", err)
 	}
 }
 
-// newMCPServer builds an MCP server whose generate_image tool runs the given
-// handler. The handler differs by mode: stdio writes a local file; the hosted
-// server encrypts and uploads.
-func newMCPServer(run func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error)) *mcp.Server {
+type generateHandler func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error)
+type usageHandler func(context.Context, getUsageArgs) (*mcp.CallToolResult, usageResult, error)
+
+// newMCPServer builds an MCP server with the two tools. The handlers differ by
+// mode: stdio works on the single local account; the hosted server on the
+// authenticated user's accounts.
+func newMCPServer(generate generateHandler, usage usageHandler) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "pintr", Version: serverVersion}, nil)
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "generate_image",
 		Description: "Generate an image with the Codex image model (GPT Image, gpt-5.6-terra). " +
 			"Optionally pass reference_images to anchor characters or style. " +
-			"On the hosted server the result includes decrypted_asset_url — open that URL to view the image; " +
-			"it returns the decrypted PNG (image/png) directly, so no decryption step is needed on your side. " +
-			"(asset_url is the raw encrypted ciphertext and decryption_key is its key, if you want to fetch/decrypt it yourself.) " +
-			"In local stdio mode the PNG is written to output_path instead.",
+			"On the hosted server, open decrypted_asset_url from the result to view the image — it returns the " +
+			"decrypted PNG (image/png) directly, no decryption needed on your side. (asset_url is the raw encrypted " +
+			"ciphertext and decryption_key is its key, if you'd rather fetch and decrypt it yourself.) " +
+			"The result also includes the account's remaining rate limits under usage.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
-		return run(ctx, args)
+		return generate(ctx, args)
+	})
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "get_usage",
+		Description: "Return the remaining Codex rate limits for your linked account(s): the 5h, weekly and " +
+			"monthly windows (only the ones OpenAI currently exposes), each with used and remaining percent.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
+		return usage(ctx, args)
 	})
 	return server
 }
 
-// stdioGenerate resolves the single local account, generates, and writes the
-// PNG to the caller-provided output_path (same machine, so a caller-chosen path
-// is fine here).
-func stdioGenerate(fileStore *authStore) func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
+// writeLocalPNG saves the image to a pintr-managed cache dir (a path pintr
+// chooses, never one the caller supplies) and returns it.
+func writeLocalPNG(png []byte) (string, error) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	dir = filepath.Join(dir, "pintr", "images")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	id, err := randomToken(12)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, id+".png")
+	if err := os.WriteFile(path, png, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// stdioGenerate resolves the single local account, generates, and saves the PNG
+// to a pintr-managed path (returned as saved_path).
+func stdioGenerate(fileStore *authStore) generateHandler {
 	return func(ctx context.Context, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 		refs, err := resolveReferences(args.ReferenceImages, true)
 		if err != nil {
@@ -98,19 +129,47 @@ func stdioGenerate(fileStore *authStore) func(context.Context, generateImageArgs
 		if err != nil {
 			return nil, generateImageResult{}, err
 		}
-		outputPath := strings.TrimSpace(args.OutputPath)
-		if outputPath == "" {
-			return nil, generateImageResult{}, errors.New("output_path is required in local mode")
-		}
-		if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
-			return nil, generateImageResult{}, err
-		}
-		if err := os.WriteFile(outputPath, img.PNG, 0o644); err != nil {
+		path, err := writeLocalPNG(img.PNG)
+		if err != nil {
 			return nil, generateImageResult{}, err
 		}
 		return nil, generateImageResult{
-			SavedPath: outputPath, Model: img.Model, Account: img.Account, DurationMs: img.DurationMs,
+			SavedPath: path, MimeType: "image/png", Model: img.Model, Account: img.Account,
+			DurationMs: img.DurationMs, SizeBytes: len(img.PNG), Usage: img.Usage,
 		}, nil
+	}
+}
+
+func stdioUsage(fileStore *authStore) usageHandler {
+	return func(ctx context.Context, _ getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
+		usage, err := fetchAccountUsage(ctx, fileAccount{store: fileStore})
+		if err != nil {
+			return nil, usageResult{}, err
+		}
+		return nil, usageResult{Accounts: []accountUsage{usage}}, nil
+	}
+}
+
+func hostedUsage(st *store) usageHandler {
+	return func(ctx context.Context, _ getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
+		u, ok := userFromContext(ctx)
+		if !ok {
+			return nil, usageResult{}, errors.New("unauthenticated")
+		}
+		accounts, err := userCodexAccounts(ctx, st, u.ID)
+		if err != nil {
+			return nil, usageResult{}, err
+		}
+		out := make([]accountUsage, 0, len(accounts))
+		for _, account := range accounts {
+			usage, err := fetchAccountUsage(ctx, account)
+			if err != nil {
+				logImage("usage fetch failed for %s: %v", account.label(), err)
+				continue
+			}
+			out = append(out, usage)
+		}
+		return nil, usageResult{Accounts: out}, nil
 	}
 }
 
@@ -153,6 +212,7 @@ func hostedGenerate(st *store, assets *assetStore, publicURL string) func(contex
 			Account:           img.Account,
 			DurationMs:        img.DurationMs,
 			SizeBytes:         len(img.PNG),
+			Usage:             img.Usage,
 		}
 		note := fmt.Sprintf(
 			"Image generated (%d bytes). To view it, open decrypted_asset_url — it returns the decrypted "+
@@ -192,6 +252,7 @@ func serveHTTP(addr string) {
 	web := newWebHandlers(st, provider, assets, strings.HasPrefix(publicURL, "https://"))
 
 	hosted := hostedGenerate(st, assets, publicURL)
+	hostedUsageFn := hostedUsage(st)
 
 	// Stateless: getServer runs per request, so the MCP server is always bound
 	// to the current request's authenticated user (no cross-user session reuse).
@@ -200,7 +261,7 @@ func serveHTTP(addr string) {
 			if _, ok := userFromContext(r.Context()); !ok {
 				return nil
 			}
-			return newMCPServer(hosted)
+			return newMCPServer(hosted, hostedUsageFn)
 		},
 		// DisableLocalhostProtection: requests arrive from nginx on 127.0.0.1
 		// with Host pintr.giuli.dev, which the SDK's DNS-rebinding guard would
