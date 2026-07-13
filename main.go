@@ -151,6 +151,31 @@ func stdioUsage(fileStore *authStore) usageHandler {
 	}
 }
 
+// resolveHostedReferences turns each reference into a data: URL. A "ref_" handle
+// is an uploaded image: it's fetched, decrypted, and deleted from storage. A
+// data:/base64 value is used inline (fine for small images). A file path is
+// rejected — a remote server can't read the caller's filesystem.
+func resolveHostedReferences(ctx context.Context, assets *assetStore, userID string, refs []string) ([]string, error) {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "ref_") {
+			img, err := assets.fetchUploadAndDelete(ctx, userID, ref)
+			if err != nil {
+				return nil, fmt.Errorf("reference %q: %w", ref, err)
+			}
+			out = append(out, bytesToDataURL(img))
+			continue
+		}
+		dataURL, err := resolveReference(ref, false)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, dataURL)
+	}
+	return out, nil
+}
+
 func hostedUsage(st *store) usageHandler {
 	return func(ctx context.Context, _ getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
 		u, ok := userFromContext(ctx)
@@ -187,7 +212,7 @@ func hostedGenerate(st *store, assets *assetStore, publicURL string) func(contex
 		if assets == nil {
 			return nil, generateImageResult{}, errors.New("image storage is not configured on this server (set PINTR_S3_*)")
 		}
-		refs, err := resolveReferences(args.ReferenceImages, false)
+		refs, err := resolveHostedReferences(ctx, assets, u.ID, args.ReferenceImages)
 		if err != nil {
 			return nil, generateImageResult{}, err
 		}
@@ -297,6 +322,7 @@ func serveHTTP(addr string) {
 	mux.HandleFunc("/tokens/revoke", web.handleRevokeTokens)
 	mux.HandleFunc("/assets/purge", web.handleAssetsPurge)
 	mux.HandleFunc("/account/delete", web.handleDeleteAccount)
+	mux.HandleFunc("/upload", web.handleUpload)
 	mux.HandleFunc("/view", web.handleView)
 	mux.HandleFunc("/", web.handleIndex)
 

@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -419,6 +420,47 @@ func (h *webHandlers) handleRevokeTokens(w http.ResponseWriter, r *http.Request)
 	h.mutate(w, r, func(session sessionInfo) error {
 		return h.store.revokeTokens(r.Context(), session.User.ID)
 	})
+}
+
+// handleUpload accepts a reference image (raw bytes, bearer-authenticated),
+// encrypts and stores it, and returns a short handle. The handle goes into a
+// generate_image call instead of the image bytes, keeping large data out of the
+// model's context. The upload is deleted the moment it's used.
+func (h *webHandlers) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := h.provider.authenticatedUser(r)
+	if !ok {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.assets == nil {
+		http.Error(w, "asset storage is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 25<<20)) // 25 MiB cap
+	if err != nil {
+		http.Error(w, "could not read body", http.StatusBadRequest)
+		return
+	}
+	if len(body) == 0 {
+		http.Error(w, "empty body", http.StatusBadRequest)
+		return
+	}
+	if mime := http.DetectContentType(body); !strings.HasPrefix(mime, "image/") {
+		http.Error(w, "body is not an image", http.StatusBadRequest)
+		return
+	}
+	handle, err := h.assets.putUploadEncrypted(r.Context(), user.ID, body)
+	if err != nil {
+		log.Printf("upload for %s: %v", user.ID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"ref": handle})
 }
 
 // handleDeleteAccount permanently deletes the user and everything they own:

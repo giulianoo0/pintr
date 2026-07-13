@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -181,6 +182,89 @@ func (a *assetStore) presignGet(ctx context.Context, objectKey string) (string, 
 	return presigned.URL, nil
 }
 
+// putUploadEncrypted encrypts an uploaded reference image under a fresh key,
+// stores only the ciphertext, and returns a short opaque handle that carries
+// the id and key (so nothing is stored server-side). The upload is deleted the
+// moment it's used (see fetchUploadAndDelete).
+func (a *assetStore) putUploadEncrypted(ctx context.Context, userID string, img []byte) (string, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	blob := gcm.Seal(nonce, nonce, img, nil)
+
+	id, err := randomToken(18)
+	if err != nil {
+		return "", err
+	}
+	objectKey := "uploads/" + userID + "/" + id
+	if _, err := a.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      &a.bucket,
+		Key:         &objectKey,
+		Body:        bytes.NewReader(blob),
+		ContentType: aws.String("application/octet-stream"),
+	}); err != nil {
+		return "", err
+	}
+	// handle = ref_<id>.<key>; the key never touches the server's storage.
+	return "ref_" + id + "." + base64.RawURLEncoding.EncodeToString(key), nil
+}
+
+// fetchUploadAndDelete downloads an uploaded reference, decrypts it, and always
+// deletes it from storage afterwards (best-effort) so uploads are one-shot.
+func (a *assetStore) fetchUploadAndDelete(ctx context.Context, userID, handle string) ([]byte, error) {
+	rest := strings.TrimPrefix(handle, "ref_")
+	id, keyEnc, ok := strings.Cut(rest, ".")
+	if !ok || id == "" {
+		return nil, errors.New("bad reference handle")
+	}
+	key, err := base64.RawURLEncoding.DecodeString(keyEnc)
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("bad reference key")
+	}
+	objectKey := "uploads/" + userID + "/" + id
+
+	out, err := a.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &a.bucket, Key: &objectKey})
+	if err != nil {
+		return nil, err
+	}
+	blob, readErr := io.ReadAll(io.LimitReader(out.Body, 64<<20))
+	out.Body.Close()
+	// Always delete after use, whatever happens next.
+	if _, delErr := a.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &a.bucket, Key: &objectKey}); delErr != nil {
+		log.Printf("warning: could not delete used upload %s: %v", objectKey, delErr)
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	if len(blob) < gcm.NonceSize() {
+		return nil, errors.New("upload too short")
+	}
+	nonce, ciphertext := blob[:gcm.NonceSize()], blob[gcm.NonceSize():]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
 // countAssets counts a user's stored objects (for the dashboard).
 func (a *assetStore) countAssets(ctx context.Context, userID string) (int, error) {
 	prefix := "assets/" + userID + "/"
@@ -196,9 +280,21 @@ func (a *assetStore) countAssets(ctx context.Context, userID string) (int, error
 	return count, nil
 }
 
-// deleteAll removes every object under the user's prefix.
+// deleteAll removes every object owned by the user — both generated images and
+// any lingering uploads.
 func (a *assetStore) deleteAll(ctx context.Context, userID string) (int, error) {
-	prefix := "assets/" + userID + "/"
+	deleted := 0
+	for _, prefix := range []string{"assets/" + userID + "/", "uploads/" + userID + "/"} {
+		n, err := a.deletePrefix(ctx, prefix)
+		deleted += n
+		if err != nil {
+			return deleted, err
+		}
+	}
+	return deleted, nil
+}
+
+func (a *assetStore) deletePrefix(ctx context.Context, prefix string) (int, error) {
 	deleted := 0
 	paginator := s3.NewListObjectsV2Paginator(a.client, &s3.ListObjectsV2Input{Bucket: &a.bucket, Prefix: &prefix})
 	for paginator.HasMorePages() {

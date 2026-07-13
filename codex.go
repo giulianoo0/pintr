@@ -37,7 +37,7 @@ var cookiePrimeURLs = []string{"https://chatgpt.com/", "https://chat.openai.com/
 // server writes) — delivery is decided by the server per mode.
 type generateImageArgs struct {
 	Prompt          string   `json:"prompt" jsonschema:"the full image prompt to render"`
-	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style. In local (stdio) mode pass file paths and pintr reads them. On the hosted server pass the image content itself (a data: URL or base64) — as the agent, read the user's local image file yourself and pass its bytes, since a remote server cannot read files off the user's machine. References are sent to Codex for this one request and never stored."`
+	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style. On the hosted server, upload each image first (POST the raw bytes to <public-url>/upload with your bearer token) and pass the returned short handle (ref_...) here — keeps the image out of the model context. A data: URL or base64 also works for small images. In local (stdio) mode, pass file paths. References are sent to Codex for this one request and never stored (uploads are deleted right after use)."`
 }
 
 type generateImageResult struct {
@@ -396,6 +396,10 @@ func extractSSEError(raw string) string {
 		return trimmed
 	}
 	return "unknown codex failure"
+}
+
+func bytesToDataURL(b []byte) string {
+	return "data:" + http.DetectContentType(b) + ";base64," + base64.StdEncoding.EncodeToString(b)
 }
 
 func imageFileToDataURL(path string) (string, error) {
