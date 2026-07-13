@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,11 +39,32 @@ type oauthProvider struct {
 	publicURL   string // https://pintr.giuli.dev
 	resourceURL string // canonical MCP resource: publicURL + "/mcp"
 	store       *store
+
+	mu        sync.Mutex
+	usedCodes map[string]int64 // code jti -> expiry unix; makes codes single-use
 }
 
 func newOAuthProvider(publicURL string, st *store) *oauthProvider {
 	base := strings.TrimRight(publicURL, "/")
-	return &oauthProvider{publicURL: base, resourceURL: base + "/mcp", store: st}
+	return &oauthProvider{publicURL: base, resourceURL: base + "/mcp", store: st, usedCodes: map[string]int64{}}
+}
+
+// consumeCode marks an authorization code's jti as used and reports whether it
+// was already spent, so a stateless code can't be replayed within its TTL.
+func (p *oauthProvider) consumeCode(jti string, expires int64) (alreadyUsed bool) {
+	now := time.Now().Unix()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for id, exp := range p.usedCodes {
+		if exp < now {
+			delete(p.usedCodes, id)
+		}
+	}
+	if _, seen := p.usedCodes[jti]; seen {
+		return true
+	}
+	p.usedCodes[jti] = expires
+	return false
 }
 
 // --- signed blobs ---
@@ -86,7 +109,9 @@ type clientBlob struct {
 
 type codeBlob struct {
 	Kind          string `json:"k"`
+	JTI           string `json:"jti"`
 	UserID        string `json:"uid"`
+	Epoch         int    `json:"ep"`
 	ClientID      string `json:"c"`
 	RedirectURI   string `json:"u"`
 	CodeChallenge string `json:"ch"`
@@ -97,6 +122,7 @@ type codeBlob struct {
 type tokenBlob struct {
 	Kind     string `json:"k"` // "access" | "refresh"
 	UserID   string `json:"uid"`
+	Epoch    int    `json:"ep"`
 	Audience string `json:"aud"`
 	Expires  int64  `json:"exp"`
 }
@@ -249,14 +275,26 @@ func (p *oauthProvider) handleAuthorize(w http.ResponseWriter, r *http.Request) 
 		renderConsent(w, session, r.URL.Query())
 		return
 	}
-	if query.Get("csrf") != session.CSRF {
+	if subtle.ConstantTimeCompare([]byte(query.Get("csrf")), []byte(session.CSRF)) != 1 {
 		http.Error(w, "bad csrf token", http.StatusBadRequest)
 		return
 	}
 
+	epoch, ok := p.store.tokenEpoch(r.Context(), session.User.ID)
+	if !ok {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	jti, err := randomToken(12)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	code, err := p.sign(codeBlob{
 		Kind:          "code",
+		JTI:           jti,
 		UserID:        session.User.ID,
+		Epoch:         epoch,
 		ClientID:      clientID,
 		RedirectURI:   redirectURI,
 		CodeChallenge: challenge,
@@ -327,11 +365,16 @@ func (p *oauthProvider) tokenFromCode(w http.ResponseWriter, r *http.Request) {
 	}
 	verifier := r.PostForm.Get("code_verifier")
 	sum := sha256.Sum256([]byte(verifier))
-	if verifier == "" || base64.RawURLEncoding.EncodeToString(sum[:]) != code.CodeChallenge {
+	computed := base64.RawURLEncoding.EncodeToString(sum[:])
+	if verifier == "" || subtle.ConstantTimeCompare([]byte(computed), []byte(code.CodeChallenge)) != 1 {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		return
 	}
-	p.issueTokens(w, code.UserID, code.Resource)
+	if p.consumeCode(code.JTI, code.Expires) {
+		oauthError(w, http.StatusBadRequest, "invalid_grant", "authorization code already used")
+		return
+	}
+	p.issueTokens(w, code.UserID, code.Resource, code.Epoch)
 }
 
 func (p *oauthProvider) tokenFromRefresh(w http.ResponseWriter, r *http.Request) {
@@ -344,16 +387,23 @@ func (p *oauthProvider) tokenFromRefresh(w http.ResponseWriter, r *http.Request)
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "refresh token expired")
 		return
 	}
-	p.issueTokens(w, refresh.UserID, refresh.Audience)
+	// Reject refresh tokens issued before the user's tokens were revoked (or the
+	// user was deleted).
+	epoch, ok := p.store.tokenEpoch(r.Context(), refresh.UserID)
+	if !ok || epoch != refresh.Epoch {
+		oauthError(w, http.StatusBadRequest, "invalid_grant", "refresh token revoked")
+		return
+	}
+	p.issueTokens(w, refresh.UserID, refresh.Audience, epoch)
 }
 
-func (p *oauthProvider) issueTokens(w http.ResponseWriter, userID, audience string) {
-	access, err := p.sign(tokenBlob{Kind: "access", UserID: userID, Audience: audience, Expires: time.Now().Add(accessTokenTTL).Unix()})
+func (p *oauthProvider) issueTokens(w http.ResponseWriter, userID, audience string, epoch int) {
+	access, err := p.sign(tokenBlob{Kind: "access", UserID: userID, Epoch: epoch, Audience: audience, Expires: time.Now().Add(accessTokenTTL).Unix()})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	refresh, err := p.sign(tokenBlob{Kind: "refresh", UserID: userID, Audience: audience, Expires: time.Now().Add(refreshTokenTTL).Unix()})
+	refresh, err := p.sign(tokenBlob{Kind: "refresh", UserID: userID, Epoch: epoch, Audience: audience, Expires: time.Now().Add(refreshTokenTTL).Unix()})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -387,6 +437,11 @@ func (p *oauthProvider) authenticatedUser(r *http.Request) (user, bool) {
 		return user{}, false
 	}
 	if !strings.EqualFold(strings.TrimRight(token.Audience, "/"), p.resourceURL) {
+		return user{}, false
+	}
+	// Confirm the user still exists and the token hasn't been revoked.
+	epoch, ok := p.store.tokenEpoch(r.Context(), token.UserID)
+	if !ok || epoch != token.Epoch {
 		return user{}, false
 	}
 	return user{ID: token.UserID}, true

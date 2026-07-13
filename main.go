@@ -90,8 +90,8 @@ func newMCPServer(resolve func(context.Context) ([]codexAccount, error)) *mcp.Se
 
 func serveHTTP(addr string) {
 	secret := strings.TrimSpace(os.Getenv("PINTR_SECRET"))
-	if len(secret) < 16 {
-		log.Fatal("HTTP mode requires PINTR_SECRET (>= 16 chars) — signs tokens and encrypts stored credentials")
+	if len(secret) < 32 {
+		log.Fatal("HTTP mode requires PINTR_SECRET (>= 32 random chars) — it signs tokens and encrypts stored credentials")
 	}
 	dbPath := os.Getenv("PINTR_DB")
 	if dbPath == "" {
@@ -123,12 +123,19 @@ func serveHTTP(addr string) {
 				return userCodexAccounts(ctx, st, u.ID)
 			})
 		},
+		// DisableLocalhostProtection: requests arrive from nginx on 127.0.0.1
+		// with Host pintr.giuli.dev, which the SDK's DNS-rebinding guard would
+		// otherwise reject. The bearer gate in requireAuth is the real defense —
+		// a rebound browser origin can't supply a valid token.
 		&mcp.StreamableHTTPOptions{Stateless: true, DisableLocalhostProtection: true},
 	)
 
 	mux := http.NewServeMux()
-	// MCP OAuth protocol endpoints
+	// MCP OAuth protocol endpoints. The resource metadata is served both at the
+	// root well-known path and the resource-suffixed path (…/mcp) so both
+	// RFC 9728 client discovery styles work.
 	mux.HandleFunc("/.well-known/oauth-protected-resource", provider.handleProtectedResourceMetadata)
+	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", provider.handleProtectedResourceMetadata)
 	mux.HandleFunc("/.well-known/oauth-authorization-server", provider.handleAuthServerMetadata)
 	mux.HandleFunc("/register", provider.handleRegister)
 	mux.HandleFunc("/authorize", provider.handleAuthorize)
@@ -146,6 +153,7 @@ func serveHTTP(addr string) {
 	mux.HandleFunc("/accounts/remove", web.handleAccountRemove)
 	mux.HandleFunc("/keys/create", web.handleKeyCreate)
 	mux.HandleFunc("/keys/remove", web.handleKeyRemove)
+	mux.HandleFunc("/tokens/revoke", web.handleRevokeTokens)
 	mux.HandleFunc("/", web.handleIndex)
 
 	httpServer := &http.Server{

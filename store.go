@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
   id            TEXT PRIMARY KEY,
   email         TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
+  token_epoch   INTEGER NOT NULL DEFAULT 1,
   created_at    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -72,8 +74,8 @@ CREATE INDEX IF NOT EXISTS idx_codex_accounts_user ON codex_accounts(user_id);
 `
 
 func openStore(path string, secret []byte) (*store, error) {
-	if len(secret) == 0 {
-		return nil, errors.New("server secret is required")
+	if len(secret) < 32 {
+		return nil, errors.New("server secret must be at least 32 bytes")
 	}
 	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", path)
 	db, err := sql.Open("sqlite", dsn)
@@ -82,9 +84,20 @@ func openStore(path string, secret []byte) (*store, error) {
 	}
 	// SQLite is a single file; one writer at a time avoids "database is locked".
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(context.Background(), schema); err != nil {
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrating: %w", err)
+	}
+	// Idempotent column adds for upgrades (CREATE TABLE IF NOT EXISTS won't alter
+	// an existing table).
+	for _, stmt := range []string{
+		`ALTER TABLE users ADD COLUMN token_epoch INTEGER NOT NULL DEFAULT 1`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrating: %w", err)
+		}
 	}
 	return &store{db: db, secret: secret}, nil
 }
@@ -101,7 +114,13 @@ func (s *store) derive(label string) []byte {
 
 func (s *store) signingKey() []byte { return s.derive("oauth-signing-v1") }
 
-func (s *store) encrypt(plaintext []byte) ([]byte, error) {
+// aad binds a ciphertext to the row it belongs to, so a stored token blob
+// can't be authenticated after being moved to another user or account.
+func tokenAAD(userID, accountID string) []byte {
+	return []byte("codex-token|" + userID + "|" + accountID)
+}
+
+func (s *store) encrypt(plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(s.derive("token-encryption-v1"))
 	if err != nil {
 		return nil, err
@@ -114,10 +133,10 @@ func (s *store) encrypt(plaintext []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
-func (s *store) decrypt(blob []byte) ([]byte, error) {
+func (s *store) decrypt(blob, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(s.derive("token-encryption-v1"))
 	if err != nil {
 		return nil, err
@@ -130,36 +149,56 @@ func (s *store) decrypt(blob []byte) ([]byte, error) {
 		return nil, errors.New("ciphertext too short")
 	}
 	nonce, ciphertext := blob[:gcm.NonceSize()], blob[gcm.NonceSize():]
-	return gcm.Open(nil, nonce, ciphertext, nil)
+	return gcm.Open(nil, nonce, ciphertext, aad)
 }
 
 // --- password hashing (argon2id) ---
 
+const (
+	argonMemory  = 64 * 1024
+	argonTime    = 1
+	argonThreads = 4
+	argonKeyLen  = 32
+)
+
+// hashPassword encodes the parameters into the hash (PHC string format) so they
+// can be tuned later without locking out existing users.
 func hashPassword(password string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	hash := argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
-	return fmt.Sprintf("argon2id$%s$%s",
+	hash := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, argonMemory, argonTime, argonThreads,
 		base64.RawStdEncoding.EncodeToString(salt),
 		base64.RawStdEncoding.EncodeToString(hash)), nil
 }
 
 func verifyPassword(password, encoded string) bool {
 	parts := strings.Split(encoded, "$")
-	if len(parts) != 3 || parts[0] != "argon2id" {
+	// ["", "argon2id", "v=19", "m=65536,t=1,p=4", salt, hash]
+	if len(parts) != 6 || parts[1] != "argon2id" {
 		return false
 	}
-	salt, err := base64.RawStdEncoding.DecodeString(parts[1])
+	var version int
+	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil || version != argon2.Version {
+		return false
+	}
+	var memory, time uint32
+	var threads uint8
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &time, &threads); err != nil {
+		return false
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
 		return false
 	}
-	want, err := base64.RawStdEncoding.DecodeString(parts[2])
+	want, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil {
 		return false
 	}
-	got := argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
+	got := argon2.IDKey([]byte(password), salt, time, memory, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
@@ -210,9 +249,27 @@ func (s *store) createUser(ctx context.Context, email, password string) (user, e
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return user{}, errors.New("an account with that email already exists")
 		}
-		return user{}, err
+		log.Printf("createUser: %v", err)
+		return user{}, errors.New("could not create account")
 	}
 	return user{ID: id, Email: email}, nil
+}
+
+// tokenEpoch returns the user's current token epoch. Issued OAuth tokens embed
+// the epoch at issue time; bumping it (revokeTokens) invalidates them all. It
+// also doubles as an existence check — false means the user is gone.
+func (s *store) tokenEpoch(ctx context.Context, userID string) (int, bool) {
+	var epoch int
+	err := s.db.QueryRowContext(ctx, `SELECT token_epoch FROM users WHERE id = ?`, userID).Scan(&epoch)
+	if err != nil {
+		return 0, false
+	}
+	return epoch, true
+}
+
+func (s *store) revokeTokens(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET token_epoch = token_epoch + 1 WHERE id = ?`, userID)
+	return err
 }
 
 func (s *store) authenticateUser(ctx context.Context, email, password string) (user, error) {
@@ -226,7 +283,8 @@ func (s *store) authenticateUser(ctx context.Context, email, password string) (u
 		return user{}, errors.New("wrong email or password")
 	}
 	if err != nil {
-		return user{}, err
+		log.Printf("authenticateUser: %v", err)
+		return user{}, errors.New("could not sign in")
 	}
 	if !verifyPassword(password, hash) {
 		return user{}, errors.New("wrong email or password")
@@ -344,45 +402,32 @@ func (s *store) deleteAccessKey(ctx context.Context, userID, id string) error {
 
 // --- codex accounts ---
 
-// upsertCodexAccount stores/updates a linked Codex account for a user.
+// upsertCodexAccount stores/updates a linked Codex account for a user in a
+// single atomic statement. The first account a user links becomes the default;
+// re-linking an existing account only refreshes its tokens/metadata and
+// preserves the default flag.
 func (s *store) upsertCodexAccount(ctx context.Context, userID string, auth *storedAuth) error {
 	tokens, err := json.Marshal(auth)
 	if err != nil {
 		return err
 	}
-	encrypted, err := s.encrypt(tokens)
+	encrypted, err := s.encrypt(tokens, tokenAAD(userID, auth.AccountID))
 	if err != nil {
 		return err
 	}
-
-	var existingID string
-	err = s.db.QueryRowContext(ctx,
-		`SELECT id FROM codex_accounts WHERE user_id = ? AND account_id = ?`, userID, auth.AccountID).Scan(&existingID)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		var count int
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_accounts WHERE user_id = ?`, userID).Scan(&count)
-		isDefault := 0
-		if count == 0 {
-			isDefault = 1 // first linked account becomes the default
-		}
-		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO codex_accounts
-			 (id, user_id, account_id, email, plan_type, fedramp, tokens_encrypted, last_refresh, is_default, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			newID("cdx"), userID, auth.AccountID, auth.Email, auth.PlanType, boolToInt(auth.Fedramp),
-			encrypted, auth.LastRefresh.UTC().Format(time.RFC3339), isDefault, nowUTC(), nowUTC())
-		return err
-	case err != nil:
-		return err
-	default:
-		_, err = s.db.ExecContext(ctx,
-			`UPDATE codex_accounts SET email = ?, plan_type = ?, fedramp = ?, tokens_encrypted = ?, last_refresh = ?, updated_at = ?
-			 WHERE id = ?`,
-			auth.Email, auth.PlanType, boolToInt(auth.Fedramp), encrypted,
-			auth.LastRefresh.UTC().Format(time.RFC3339), nowUTC(), existingID)
-		return err
-	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO codex_accounts
+		 (id, user_id, account_id, email, plan_type, fedramp, tokens_encrypted, last_refresh, is_default, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+		   CASE WHEN (SELECT COUNT(*) FROM codex_accounts WHERE user_id = ?) = 0 THEN 1 ELSE 0 END,
+		   ?, ?)
+		 ON CONFLICT(user_id, account_id) DO UPDATE SET
+		   email = excluded.email, plan_type = excluded.plan_type, fedramp = excluded.fedramp,
+		   tokens_encrypted = excluded.tokens_encrypted, last_refresh = excluded.last_refresh,
+		   updated_at = excluded.updated_at`,
+		newID("cdx"), userID, auth.AccountID, auth.Email, auth.PlanType, boolToInt(auth.Fedramp),
+		encrypted, auth.LastRefresh.UTC().Format(time.RFC3339), userID, nowUTC(), nowUTC())
+	return err
 }
 
 func (s *store) listCodexAccounts(ctx context.Context, userID string) ([]codexAccountRow, error) {
@@ -411,15 +456,20 @@ func (s *store) listCodexAccounts(ctx context.Context, userID string) ([]codexAc
 	return accounts, rows.Err()
 }
 
-// loadCodexAuth decrypts the tokens for one account (scoped to the user).
+// loadCodexAuth decrypts the tokens for one account (scoped to the user). The
+// account_id is fetched too so it can be used as the AES-GCM AAD.
 func (s *store) loadCodexAuth(ctx context.Context, userID, accountRowID string) (storedAuth, error) {
-	var encrypted []byte
+	var (
+		accountID string
+		encrypted []byte
+	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT tokens_encrypted FROM codex_accounts WHERE id = ? AND user_id = ?`, accountRowID, userID).Scan(&encrypted)
+		`SELECT account_id, tokens_encrypted FROM codex_accounts WHERE id = ? AND user_id = ?`,
+		accountRowID, userID).Scan(&accountID, &encrypted)
 	if err != nil {
 		return storedAuth{}, err
 	}
-	plaintext, err := s.decrypt(encrypted)
+	plaintext, err := s.decrypt(encrypted, tokenAAD(userID, accountID))
 	if err != nil {
 		return storedAuth{}, fmt.Errorf("decrypting tokens: %w", err)
 	}
@@ -436,7 +486,7 @@ func (s *store) saveCodexAuth(ctx context.Context, userID, accountRowID string, 
 	if err != nil {
 		return err
 	}
-	encrypted, err := s.encrypt(tokens)
+	encrypted, err := s.encrypt(tokens, tokenAAD(userID, auth.AccountID))
 	if err != nil {
 		return err
 	}
@@ -448,9 +498,36 @@ func (s *store) saveCodexAuth(ctx context.Context, userID, accountRowID string, 
 	return err
 }
 
+// deleteCodexAccount removes an account and, if it was the default, promotes the
+// oldest remaining account so the user always has a default.
 func (s *store) deleteCodexAccount(ctx context.Context, userID, accountRowID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM codex_accounts WHERE id = ? AND user_id = ?`, accountRowID, userID)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var wasDefault int
+	err = tx.QueryRowContext(ctx,
+		`SELECT is_default FROM codex_accounts WHERE id = ? AND user_id = ?`, accountRowID, userID).Scan(&wasDefault)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM codex_accounts WHERE id = ? AND user_id = ?`, accountRowID, userID); err != nil {
+		return err
+	}
+	if wasDefault == 1 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE codex_accounts SET is_default = 1
+			 WHERE user_id = ? AND id = (SELECT id FROM codex_accounts WHERE user_id = ? ORDER BY created_at LIMIT 1)`,
+			userID, userID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *store) setDefaultCodexAccount(ctx context.Context, userID, accountRowID string) error {

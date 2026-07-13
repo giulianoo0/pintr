@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"html"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -78,13 +80,40 @@ func (h *webHandlers) requireSession(w http.ResponseWriter, r *http.Request) (se
 	return session, true
 }
 
-// checkCSRF enforces the session-bound token on authenticated POSTs.
+// checkCSRF enforces the session-bound token on authenticated POSTs. It also
+// requires POST, so state changes can't be driven by a cross-site GET.
 func (h *webHandlers) checkCSRF(w http.ResponseWriter, r *http.Request, session sessionInfo) bool {
-	if r.FormValue("csrf") != session.CSRF {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(r.FormValue("csrf")), []byte(session.CSRF)) != 1 {
 		http.Error(w, "bad csrf token", http.StatusBadRequest)
 		return false
 	}
 	return true
+}
+
+// Pre-session CSRF for login/signup (no session exists yet): a double-submit
+// cookie. The token is set as a cookie and echoed in the form; a cross-site
+// forger can't read or set the victim's cookie, so it can't match.
+const formCSRFCookie = "pintr_form_csrf"
+
+func (h *webHandlers) issueFormCSRF(w http.ResponseWriter) string {
+	token, _ := randomToken(16)
+	http.SetCookie(w, &http.Cookie{
+		Name: formCSRFCookie, Value: token, Path: "/", HttpOnly: true,
+		Secure: h.secureCookies, SameSite: http.SameSiteLaxMode, MaxAge: 1800,
+	})
+	return token
+}
+
+func (h *webHandlers) checkFormCSRF(r *http.Request) bool {
+	cookie, err := r.Cookie(formCSRFCookie)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(r.FormValue("csrf"))) == 1
 }
 
 // --- pages ---
@@ -107,14 +136,20 @@ accounts and get your access key.</p>
 
 func (h *webHandlers) handleSignup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		renderPage(w, "create account", `
+		token := h.issueFormCSRF(w)
+		renderPage(w, "create account", fmt.Sprintf(`
 <h2>create account</h2>
 <form method="post" action="/signup">
+%s
 <input type="email" name="email" placeholder="email" autofocus required>
 <input type="password" name="password" placeholder="password (8+ chars)" required>
 <button type="submit">create account</button>
 </form>
-<p><a href="/login">already have an account? log in</a></p>`)
+<p><a href="/login">already have an account? log in</a></p>`, csrfField(token)))
+		return
+	}
+	if !h.checkFormCSRF(r) {
+		http.Error(w, "please reload the form and try again", http.StatusBadRequest)
 		return
 	}
 
@@ -145,15 +180,21 @@ add the server to your mcp client and log in through the browser.</p>
 func (h *webHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	next := sanitizeNext(r.FormValue("next"))
 	if r.Method != http.MethodPost {
+		token := h.issueFormCSRF(w)
 		renderPage(w, "log in", fmt.Sprintf(`
 <h2>log in</h2>
 <form method="post" action="/login">
+%s
 <input type="hidden" name="next" value="%s">
 <input type="email" name="email" placeholder="email" autofocus required>
 <input type="password" name="password" placeholder="password" required>
 <button type="submit">log in</button>
 </form>
-<p><a href="/signup">create an account</a></p>`, html.EscapeString(next)))
+<p><a href="/signup">create an account</a></p>`, csrfField(token), html.EscapeString(next)))
+		return
+	}
+	if !h.checkFormCSRF(r) {
+		http.Error(w, "please reload the form and try again", http.StatusBadRequest)
 		return
 	}
 
@@ -170,6 +211,11 @@ func (h *webHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *webHandlers) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// Require POST + a valid CSRF token so a cross-site GET/POST can't force logout.
+	session, ok := sessionFromRequest(r, h.store)
+	if ok && !h.checkCSRF(w, r, session) {
+		return
+	}
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		h.store.deleteSession(r.Context(), cookie.Value)
 	}
@@ -233,6 +279,7 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		body.WriteString(`</table>`)
 	}
 	fmt.Fprintf(&body, `<form method="post" action="/keys/create">%s<input type="text" name="name" placeholder="key name (optional)"><button type="submit">new access key</button></form>`, csrfField(csrf))
+	fmt.Fprintf(&body, `<p><form method="post" action="/tokens/revoke" onsubmit="return confirm('sign out all mcp clients? they will have to authorize again.')">%s<button type="submit" class="link danger">revoke all mcp tokens</button></form></p>`, csrfField(csrf))
 
 	body.WriteString(`<h2>connect an mcp client</h2><p>point your client at <code>` + html.EscapeString(h.provider.resourceURL) + `</code> and it will walk you through login. for example:</p><p><code>claude mcp add --transport http pintr ` + html.EscapeString(h.provider.resourceURL) + `</code></p>`)
 
@@ -319,11 +366,13 @@ func (h *webHandlers) handleLinkFinish(w http.ResponseWriter, r *http.Request) {
 
 	auth, err := exchangeAuthorizationCode(r.Context(), parsed.Query().Get("code"), setupRedirectURI, entry.verifier)
 	if err != nil {
-		linkErr("code exchange failed: " + err.Error())
+		log.Printf("link finish: code exchange: %v", err)
+		linkErr("that code did not work — start over and paste a fresh callback url.")
 		return
 	}
 	if err := h.store.upsertCodexAccount(r.Context(), session.User.ID, auth); err != nil {
-		linkErr("saving the account failed: " + err.Error())
+		log.Printf("link finish: upsert account: %v", err)
+		linkErr("could not save the account. please try again.")
 		return
 	}
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
@@ -346,6 +395,14 @@ func (h *webHandlers) handleAccountRemove(w http.ResponseWriter, r *http.Request
 func (h *webHandlers) handleKeyRemove(w http.ResponseWriter, r *http.Request) {
 	h.mutate(w, r, func(session sessionInfo) error {
 		return h.store.deleteAccessKey(r.Context(), session.User.ID, r.FormValue("id"))
+	})
+}
+
+// handleRevokeTokens bumps the user's token epoch, immediately invalidating all
+// issued OAuth access and refresh tokens (the kill-switch for a leak).
+func (h *webHandlers) handleRevokeTokens(w http.ResponseWriter, r *http.Request) {
+	h.mutate(w, r, func(session sessionInfo) error {
+		return h.store.revokeTokens(r.Context(), session.User.ID)
 	})
 }
 
@@ -410,12 +467,22 @@ func csrfField(csrf string) string {
 	return `<input type="hidden" name="csrf" value="` + csrf + `">`
 }
 
-// sanitizeNext only allows local paths, preventing open-redirects after login.
+// sanitizeNext only allows a clean same-origin path, preventing open redirects
+// after login. Backslashes are rejected because browsers normalize them to "/",
+// turning "/\evil.com" into the protocol-relative "//evil.com".
 func sanitizeNext(next string) string {
-	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
-		return next
+	if next == "" || strings.ContainsAny(next, "\\") {
+		return "/dashboard"
 	}
-	return "/dashboard"
+	u, err := url.Parse(next)
+	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") {
+		return "/dashboard"
+	}
+	out := u.Path
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	return out
 }
 
 func shortDate(rfc3339 string) string {
@@ -427,6 +494,11 @@ func shortDate(rfc3339 string) string {
 
 func renderPage(w http.ResponseWriter, title, body string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Authenticated, user-specific pages: don't let a proxy cache them, and
+	// don't let another site frame them (clickjacking on the consent page).
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 	fmt.Fprintf(w, pageShell, html.EscapeString(title), body)
 }
 
