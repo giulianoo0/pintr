@@ -34,8 +34,44 @@ claude mcp add --transport http pintr https://pintr.giuli.dev/mcp
 On first use the client gets a 401, discovers the OAuth endpoints, and opens the
 browser. You log in to pintr and click allow; the client receives its own token
 (auto-refreshed). Any MCP client with remote support works (Claude Code, Claude
-Desktop custom connector, Codex). Scripts can send a personal access key
-directly: `Authorization: Bearer pintr_...`.
+Desktop custom connector, Codex).
+
+## Connecting with an access key manually (no OAuth flow)
+
+If you don't want the browser OAuth flow, use a personal access key as a static
+bearer header. Both auth methods work on `/mcp` and `/upload`.
+
+1. Create an account and, on the dashboard, click "new access key". Copy it
+   (`pintr_...`) — it is shown only once.
+2. Add the server with the key as an `Authorization: Bearer` header:
+
+Claude Code:
+```
+claude mcp add --transport http pintr https://pintr.giuli.dev/mcp \
+  --header "Authorization: Bearer pintr_YOURKEY"
+```
+
+Any client that runs a command (Claude Desktop config, etc.), via the mcp-remote
+bridge:
+```json
+{
+  "mcpServers": {
+    "pintr": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://pintr.giuli.dev/mcp",
+               "--header", "Authorization: Bearer pintr_YOURKEY"]
+    }
+  }
+}
+```
+
+Scripts / curl send the same header directly:
+```
+curl -H "Authorization: Bearer pintr_YOURKEY" ... https://pintr.giuli.dev/mcp
+```
+
+The key maps to your account and never expires until you revoke it from the
+dashboard. Keep it secret — anyone with it can generate on your linked accounts.
 
 ## MCP tools
 
