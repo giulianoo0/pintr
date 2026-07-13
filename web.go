@@ -140,7 +140,7 @@ func (h *webHandlers) handleIndex(w http.ResponseWriter, r *http.Request) {
 <div class="cards">
   <div class="card"><h3>your own login</h3><p>sign in with ChatGPT through OAuth — no separate API key or billing to set up.</p></div>
   <div class="card"><h3>encrypted by default</h3><p>generated images and uploads are encrypted at rest; the keys are returned once and never stored.</p></div>
-  <div class="card"><h3>any mcp client</h3><p>connect Claude Code, Claude Desktop, Codex, or a plain script over HTTPS.</p></div>
+  <div class="card"><h3>any mcp client</h3><p>connect Claude Code, OpenCode, PI, or any MCP client over HTTPS.</p></div>
 </div>`)
 }
 
@@ -289,11 +289,13 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&keysPane, `<p><form method="post" action="/tokens/revoke" onsubmit="return confirm('sign out all mcp clients? they will have to authorize again.')">%s<button type="submit" class="link danger">revoke all mcp tokens</button></form></p>`, csrfField(csrf))
 
 	// --- connect pane ---
-	connectPane := `<p>point any mcp client at this url and it walks you through login in the browser:</p>
+	connectPane := `<p>add pintr to your mcp client by url. on first connect your browser opens; you log in to pintr and click allow, and the client keeps its own token (auto-refreshed).</p>
+<h3>Claude Code</h3>
 <p><code>claude mcp add --transport http pintr ` + resource + `</code></p>
-<p class="muted">the first time it connects, your browser opens; you log in to pintr and click allow, and the client gets its own token (auto-refreshed). works in claude code, claude desktop (custom connector), codex, etc.</p>
+<h3>OpenCode, PI, and other mcp clients</h3>
+<p>add a remote (http) mcp server pointing at <code>` + resource + `</code>.</p>
 <h2>use an access key instead (no oauth)</h2>
-<p>create a key in the access keys tab, then pass it as a header:</p>
+<p>create a key in the access keys tab and pass it as a header (works in any client):</p>
 <p><code>claude mcp add --transport http pintr ` + resource + ` --header "Authorization: Bearer pintr_YOURKEY"</code></p>`
 
 	// --- data pane (account identity + assets + danger zone) ---
@@ -676,7 +678,7 @@ func renderDashboard(w http.ResponseWriter, title, body string) {
 const setupRedirectURI = "http://localhost:1455/auth/callback"
 
 const styles = `*{box-sizing:border-box}
-body{background:#0f0f10;color:#e7e7e7;font-family:system-ui,sans-serif;margin:0;line-height:1.55}
+body{background:#0f0f10;color:#e7e7e7;font-family:'Geist',system-ui,-apple-system,sans-serif;margin:0;line-height:1.55}
 header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
 .logo{display:inline-flex;align-items:center;gap:.5rem;text-decoration:none;color:#fff;font-weight:700;font-size:1.15rem;letter-spacing:-.01em}
 .logo svg{display:block}
@@ -688,7 +690,7 @@ main{max-width:64rem;margin:0 auto;padding:1.4rem 1.5rem 3rem}
 .hero{margin:1.5rem 0 .5rem}
 .hero-title{font-size:2rem;font-weight:750;letter-spacing:-.02em;margin:0 0 .6rem;line-height:1.15}
 input.dtab{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
-.tabs{position:relative;display:flex;background:#141416;border:1px solid #262626;border-radius:9px;padding:3px}
+.tabs{position:relative;display:flex;width:22rem;max-width:100%%;background:#141416;border:1px solid #262626;border-radius:9px;padding:3px}
 .tabs .slider{position:absolute;top:3px;left:3px;bottom:3px;width:calc((100%% - 6px)/4);background:#2b6cb0;border-radius:6px;transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:0}
 .tabs label{position:relative;z-index:1;flex:1;text-align:center;padding:.34rem .8rem;font-size:.85rem;color:#c9c9c9;cursor:pointer;white-space:nowrap;border-radius:6px}
 .tabs label:hover{color:#fff}
@@ -737,6 +739,8 @@ code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-
 const docHead = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>%s</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>` + styles + `</style></head><body>`
 
 // pageShell: public/simple pages — logo left, nav right. Verbs: title, nav, body.

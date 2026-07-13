@@ -33,8 +33,8 @@ claude mcp add --transport http pintr https://pintr.giuli.dev/mcp
 
 On first use the client gets a 401, discovers the OAuth endpoints, and opens the
 browser. You log in to pintr and click allow; the client receives its own token
-(auto-refreshed). Any MCP client with remote support works (Claude Code, Claude
-Desktop custom connector, Codex).
+(auto-refreshed). Any MCP client with remote support works — Claude Code,
+OpenCode, PI, and others: add the URL as a remote (http) MCP server.
 
 ## Connecting with an access key manually (no OAuth flow)
 
