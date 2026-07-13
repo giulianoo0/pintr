@@ -17,9 +17,11 @@ call its one tool: `generate_image`.
    codex image backend, reads the streamed result, and writes the png to the
    path you asked for.
 
-you can run it two ways: over stdio (a client starts it for you) or over http
-(you host it once and point clients at a url). the http mode is what runs at
-`pintr.giuli.dev`.
+you can run it two ways:
+
+- **stdio** — a single local user, a client starts the binary for you.
+- **http** — a hosted multi-user app with a dashboard, accounts, and the
+  standard mcp oauth flow. this is what runs at `pintr.giuli.dev`.
 
 ## build
 
@@ -35,13 +37,8 @@ go build -o pintr .
 ./pintr login
 ```
 
-open the printed url, sign in, done. the tokens are saved for later.
-
-on a server there is an easier way: open `https://your-host/setup` in your
-browser, enter the access key, click the openai link and sign in. the browser
-then fails to open a `localhost:1455` page, which is expected. copy that url
-from the address bar, paste it back into the setup page, done. no ssh tunnel
-needed.
+open the printed url, sign in, done. the tokens are saved for later. this is
+only for stdio mode; the hosted app links accounts from its dashboard instead.
 
 ## use it locally (stdio)
 
@@ -61,35 +58,29 @@ point your mcp client at the binary. for claude code, add this to `.mcp.json`:
 the client starts pintr when it needs it. if you have not signed in yet,
 it walks you through the login first.
 
-## use it through pintr.giuli.dev (http)
+## use it through pintr.giuli.dev (http, multi-user)
 
-`pintr.giuli.dev` runs pintr in http mode. it speaks the standard mcp oauth
-flow, so you do not paste any token into your config. just add the url:
-
-```
-claude mcp add --transport http --scope user pintr https://pintr.giuli.dev
-```
-
-the first time the client connects it gets a 401, discovers the oauth
-endpoints, and opens your browser. you type the access key once on the consent
-page and the client gets its own token (with automatic refresh). the same flow
-works in any mcp client that supports remote servers: claude code, claude
-desktop (add a custom connector with the url), codex, and so on.
-
-for plain scripts and curl you can still send the access key directly as
-`Authorization: Bearer <access key>`.
-
-to run the http server yourself:
+1. open `https://pintr.giuli.dev`, create an account (email + password). you
+   get a personal access key, shown once.
+2. on the dashboard, click **link a chatgpt account**, open the openai link and
+   sign in. the browser then fails to open a `localhost:1455` page, which is
+   expected — copy that url from the address bar and paste it back. you can
+   link more than one account; pick one as the default and the rest are used as
+   failover.
+3. add the server to your mcp client by url:
 
 ```
-MCP_AUTH_TOKEN=your-secret PINTR_PUBLIC_URL=https://your-host ./pintr -http 127.0.0.1:8090
+claude mcp add --transport http pintr https://pintr.giuli.dev/mcp
 ```
 
-`MCP_AUTH_TOKEN` is the access key: it guards the consent page and `/setup`,
-and signs the tokens pintr issues. `PINTR_PUBLIC_URL` is the public https url
-clients use to reach the server. put a normal reverse proxy (nginx, caddy) with
-https in front of it. the server streams its replies, so turn response
-buffering off in the proxy.
+the first time it connects it gets a 401, discovers the oauth endpoints, and
+opens your browser. you log in to pintr and click allow; the client gets its
+own token, refreshed automatically. the same flow works in any mcp client with
+remote support: claude code, claude desktop (add a custom connector with the
+url), codex, and so on.
+
+for scripts and curl, send your access key directly:
+`Authorization: Bearer pintr_...`.
 
 ## the tool: generate_image
 
@@ -98,18 +89,37 @@ buffering off in the proxy.
 | `prompt` | yes | the full image prompt |
 | `output_path` | yes | where to save the png |
 | `reference_images` | no | file paths sent with the prompt to lock a look or a character |
-| `model` | no | image model to use, defaults to `gpt-5.6-terra` |
 
-it returns the saved path, the model used, and how long it took.
+the driver model is fixed to `gpt-5.6-terra` server-side, so callers cannot pass
+a bogus model. it returns the saved path, the model, the account used, and how
+long it took.
+
+## host it yourself
+
+```
+PINTR_SECRET=<random 32+ chars> \
+PINTR_DB=/var/lib/pintr/pintr.db \
+PINTR_PUBLIC_URL=https://your-host \
+./pintr -http 127.0.0.1:8090
+```
+
+- `PINTR_SECRET` signs the oauth tokens and encrypts the stored chatgpt tokens
+  at rest — keep it secret and stable.
+- `PINTR_DB` is the sqlite file path.
+- `PINTR_PUBLIC_URL` is the public https base clients reach.
+
+put a reverse proxy (nginx, caddy) with https in front. the mcp endpoint streams
+its replies, so turn response buffering off.
 
 ## flags
 
 | flag | default | what it does |
 | --- | --- | --- |
-| `-http ADDR` | off | serve over http on ADDR instead of stdio |
-| `-auth-file PATH` | `~/.config/pintr/auth.json` | where tokens live |
+| `-http ADDR` | off | serve the http app + mcp on ADDR instead of stdio |
+| `-auth-file PATH` | `~/.config/pintr/auth.json` | stdio mode: where the local token lives |
 
 ## notes
 
 this uses the public codex oauth client and normal user login, the same way the
-codex cli and other tools do. your tokens stay on your machine.
+codex cli and other tools do. in hosted mode, chatgpt tokens are encrypted at
+rest and passwords are hashed with argon2id.
