@@ -144,7 +144,8 @@ func stdioGenerate(fileStore *authStore) generateHandler {
 
 func stdioUsage(fileStore *authStore) usageHandler {
 	return func(ctx context.Context, _ getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
-		usage, err := fetchAccountUsage(ctx, fileAccount{store: fileStore})
+		// get_usage is an explicit check → fetch fresh and reset the cache timer.
+		usage, err := accountUsage30m(ctx, fileAccount{store: fileStore}, true)
 		if err != nil {
 			return nil, usageResult{}, err
 		}
@@ -189,7 +190,8 @@ func hostedUsage(st *store) usageHandler {
 		}
 		out := make([]accountUsage, 0, len(accounts))
 		for _, account := range accounts {
-			usage, err := fetchAccountUsage(ctx, account)
+			// get_usage is an explicit check → fetch fresh and reset the timer.
+			usage, err := accountUsage30m(ctx, account, true)
 			if err != nil {
 				logImage("usage fetch failed for %s: %v", account.label(), err)
 				continue
@@ -321,6 +323,8 @@ func serveHTTP(addr string) {
 	mux.HandleFunc("/keys/create", web.handleKeyCreate)
 	mux.HandleFunc("/keys/remove", web.handleKeyRemove)
 	mux.HandleFunc("/tokens/revoke", web.handleRevokeTokens)
+	mux.HandleFunc("/sessions/remove", web.handleSessionRemove)
+	mux.HandleFunc("/usage/refresh", web.handleUsageRefresh)
 	mux.HandleFunc("/assets/purge", web.handleAssetsPurge)
 	mux.HandleFunc("/account/delete", web.handleDeleteAccount)
 	mux.HandleFunc("/upload", web.handleUpload)

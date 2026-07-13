@@ -122,6 +122,7 @@ type codeBlob struct {
 type tokenBlob struct {
 	Kind     string `json:"k"` // "access" | "refresh"
 	UserID   string `json:"uid"`
+	SID      string `json:"sid"` // oauth_sessions row (per-session revoke)
 	Epoch    int    `json:"ep"`
 	Audience string `json:"aud"`
 	Expires  int64  `json:"exp"`
@@ -374,7 +375,12 @@ func (p *oauthProvider) tokenFromCode(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "authorization code already used")
 		return
 	}
-	p.issueTokens(w, code.UserID, code.Resource, code.Epoch)
+	sid, err := p.store.createOAuthSession(r.Context(), code.UserID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	p.issueTokens(w, code.UserID, sid, code.Resource, code.Epoch)
 }
 
 func (p *oauthProvider) tokenFromRefresh(w http.ResponseWriter, r *http.Request) {
@@ -387,23 +393,22 @@ func (p *oauthProvider) tokenFromRefresh(w http.ResponseWriter, r *http.Request)
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "refresh token expired")
 		return
 	}
-	// Reject refresh tokens issued before the user's tokens were revoked (or the
-	// user was deleted).
-	epoch, ok := p.store.tokenEpoch(r.Context(), refresh.UserID)
-	if !ok || epoch != refresh.Epoch {
-		oauthError(w, http.StatusBadRequest, "invalid_grant", "refresh token revoked")
+	// Reject refresh tokens whose session was revoked (per-session or a global
+	// "revoke all", which bumps the epoch), or whose user was deleted.
+	if !p.store.oauthSessionValid(r.Context(), refresh.SID, refresh.UserID, refresh.Epoch) {
+		oauthError(w, http.StatusBadRequest, "invalid_grant", "session revoked")
 		return
 	}
-	p.issueTokens(w, refresh.UserID, refresh.Audience, epoch)
+	p.issueTokens(w, refresh.UserID, refresh.SID, refresh.Audience, refresh.Epoch)
 }
 
-func (p *oauthProvider) issueTokens(w http.ResponseWriter, userID, audience string, epoch int) {
-	access, err := p.sign(tokenBlob{Kind: "access", UserID: userID, Epoch: epoch, Audience: audience, Expires: time.Now().Add(accessTokenTTL).Unix()})
+func (p *oauthProvider) issueTokens(w http.ResponseWriter, userID, sid, audience string, epoch int) {
+	access, err := p.sign(tokenBlob{Kind: "access", UserID: userID, SID: sid, Epoch: epoch, Audience: audience, Expires: time.Now().Add(accessTokenTTL).Unix()})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	refresh, err := p.sign(tokenBlob{Kind: "refresh", UserID: userID, Epoch: epoch, Audience: audience, Expires: time.Now().Add(refreshTokenTTL).Unix()})
+	refresh, err := p.sign(tokenBlob{Kind: "refresh", UserID: userID, SID: sid, Epoch: epoch, Audience: audience, Expires: time.Now().Add(refreshTokenTTL).Unix()})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -439,9 +444,9 @@ func (p *oauthProvider) authenticatedUser(r *http.Request) (user, bool) {
 	if !strings.EqualFold(strings.TrimRight(token.Audience, "/"), p.resourceURL) {
 		return user{}, false
 	}
-	// Confirm the user still exists and the token hasn't been revoked.
-	epoch, ok := p.store.tokenEpoch(r.Context(), token.UserID)
-	if !ok || epoch != token.Epoch {
+	// Confirm the session still exists (per-session or global revoke, and user
+	// deletion, all invalidate it here).
+	if !p.store.oauthSessionValid(r.Context(), token.SID, token.UserID, token.Epoch) {
 		return user{}, false
 	}
 	return user{ID: token.UserID}, true

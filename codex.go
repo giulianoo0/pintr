@@ -83,6 +83,7 @@ type codexAccount interface {
 	fresh(ctx context.Context) (codexAuth, error)
 	forceRefresh(ctx context.Context) (codexAuth, error)
 	label() string
+	cacheKey() string // stable identity for the usage cache
 }
 
 func imageModel() string {
@@ -165,8 +166,8 @@ func generateImage(ctx context.Context, accounts []codexAccount, prompt string, 
 		if err == nil {
 			logImage("ok account=%s duration_ms=%d bytes=%d", account.label(), durationMs, len(png))
 			img := generatedImage{PNG: png, Model: model, Account: account.label(), DurationMs: durationMs}
-			// Best-effort: attach the account's remaining limits to the result.
-			if usage, uerr := fetchAccountUsage(ctx, account); uerr == nil {
+			// Best-effort: attach the account's remaining limits (cached, 30m).
+			if usage, uerr := accountUsage30m(ctx, account, false); uerr == nil {
 				img.Usage = &usage
 			} else {
 				logImage("usage fetch failed for %s: %v", account.label(), uerr)

@@ -133,12 +133,11 @@ func (h *webHandlers) handleIndex(w http.ResponseWriter, r *http.Request) {
 <div class="hero">
   <h1 class="hero-title">Codex image generation, over MCP.</h1>
   <p class="lead">pintr turns your own ChatGPT login into an image generator any
-  MCP client can call. Sign in, link one or more accounts, and generate — no API
-  key, nothing to install.</p>
+  MCP client can call.</p>
   <div class="cta"><a href="/signup" class="btn">create account</a> <a href="/login">log in</a></div>
 </div>
 <div class="cards">
-  <div class="card"><h3>your own login</h3><p>sign in with ChatGPT through OAuth — no separate API key or billing to set up.</p></div>
+  <div class="card"><h3>your own login</h3><p>sign in with ChatGPT through OAuth — no separate API key or billing. link several accounts and pintr spreads generation across them, failing over when one hits a limit.</p></div>
   <div class="card"><h3>encrypted by default</h3><p>generated images and uploads are encrypted at rest; the keys are returned once and never stored.</p></div>
   <div class="card"><h3>any mcp client</h3><p>connect Claude Code, OpenCode, PI, or any MCP client over HTTPS.</p></div>
 </div>`)
@@ -263,7 +262,7 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 			usageHTML := `<div class="limits">limits unavailable</div>`
 			account := dbAccount{store: h.store, userID: session.User.ID, rowID: a.ID, display: orUnknown(a.Email)}
-			if usage, uerr := fetchAccountUsage(r.Context(), account); uerr == nil {
+			if usage, uerr := accountUsage30m(r.Context(), account, false); uerr == nil {
 				usageHTML = renderUsage(usage)
 			}
 
@@ -271,17 +270,30 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				html.EscapeString(orUnknown(a.Email)), html.EscapeString(orUnknown(a.PlanType)), badge, usageHTML, actions)
 		}
 	}
-	fmt.Fprintf(&accountsPane, `<form method="post" action="/link/start">%s<button type="submit">link a chatgpt account</button></form>`, csrfField(csrf))
+	fmt.Fprintf(&accountsPane, `<form method="post" action="/link/start" style="display:inline">%s<button type="submit">link a chatgpt account</button></form>`, csrfField(csrf))
+	if len(accounts) > 0 {
+		fmt.Fprintf(&accountsPane, ` <form method="post" action="/usage/refresh" style="display:inline">%s<button type="submit" class="link">refresh limits</button></form>`, csrfField(csrf))
+		accountsPane.WriteString(`<p class="muted">limits are cached ~30 min; refresh (or the get_usage tool) fetches fresh.</p>`)
+	}
 
-	// --- access keys pane ---
+	// --- access keys pane (personal keys + active OAuth sessions) ---
+	oauthSessions, err := h.store.listOAuthSessions(r.Context(), session.User.ID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	var keysPane strings.Builder
-	keysPane.WriteString(`<p class="muted">optional. most clients use the browser oauth flow (see connect). a key lets scripts or a client config authenticate with <code>Authorization: Bearer &lt;key&gt;</code>.</p>`)
-	if len(keys) > 0 {
+	keysPane.WriteString(`<p class="muted">access keys authenticate scripts/clients with <code>Authorization: Bearer &lt;key&gt;</code>. mcp clients that logged in through the browser oauth flow show up as "oauth" sessions — revoke any of them here.</p>`)
+	if len(keys) > 0 || len(oauthSessions) > 0 {
 		keysPane.WriteString(`<table><tr><th>key</th><th>name</th><th>created</th><th></th></tr>`)
 		for _, k := range keys {
 			fmt.Fprintf(&keysPane, `<tr><td><code>%s…</code></td><td>%s</td><td>%s</td><td><form method="post" action="/keys/remove" style="display:inline">%s<input type="hidden" name="id" value="%s"><button type="submit" class="link danger">revoke</button></form></td></tr>`,
 				html.EscapeString(k.Prefix), html.EscapeString(k.Name), html.EscapeString(shortDate(k.CreatedAt)),
 				csrfField(csrf), html.EscapeString(k.ID))
+		}
+		for _, s := range oauthSessions {
+			fmt.Fprintf(&keysPane, `<tr><td><span class="muted">oauth session</span></td><td>oauth</td><td>%s</td><td><form method="post" action="/sessions/remove" style="display:inline">%s<input type="hidden" name="id" value="%s"><button type="submit" class="link danger">revoke</button></form></td></tr>`,
+				html.EscapeString(shortDate(s.CreatedAt)), csrfField(csrf), html.EscapeString(s.ID))
 		}
 		keysPane.WriteString(`</table>`)
 	}
@@ -449,11 +461,38 @@ func (h *webHandlers) handleKeyRemove(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleRevokeTokens bumps the user's token epoch, immediately invalidating all
-// issued OAuth access and refresh tokens (the kill-switch for a leak).
+// handleRevokeTokens invalidates all issued OAuth tokens at once (kill-switch):
+// it bumps the token epoch and removes every OAuth session.
 func (h *webHandlers) handleRevokeTokens(w http.ResponseWriter, r *http.Request) {
 	h.mutate(w, r, func(session sessionInfo) error {
-		return h.store.revokeTokens(r.Context(), session.User.ID)
+		if err := h.store.revokeTokens(r.Context(), session.User.ID); err != nil {
+			return err
+		}
+		return h.store.deleteAllOAuthSessions(r.Context(), session.User.ID)
+	})
+}
+
+// handleSessionRemove revokes a single OAuth session (one client's tokens).
+func (h *webHandlers) handleSessionRemove(w http.ResponseWriter, r *http.Request) {
+	h.mutate(w, r, func(session sessionInfo) error {
+		return h.store.deleteOAuthSession(r.Context(), session.User.ID, r.FormValue("id"))
+	})
+}
+
+// handleUsageRefresh force-fetches each linked account's Codex limits (resetting
+// the 30-minute cache) and returns to the dashboard.
+func (h *webHandlers) handleUsageRefresh(w http.ResponseWriter, r *http.Request) {
+	h.mutate(w, r, func(session sessionInfo) error {
+		accounts, err := userCodexAccounts(r.Context(), h.store, session.User.ID)
+		if err != nil {
+			return err
+		}
+		for _, account := range accounts {
+			if _, uerr := accountUsage30m(r.Context(), account, true); uerr != nil {
+				log.Printf("usage refresh for %s: %v", account.label(), uerr)
+			}
+		}
+		return nil
 	})
 }
 

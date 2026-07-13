@@ -8,7 +8,47 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 )
+
+// Codex usage is cached per account for 30 minutes so passive reads (dashboard
+// loads, the usage attached to each generate_image) don't hammer the upstream
+// endpoint. A forced read (the dashboard refresh button, the get_usage tool)
+// fetches fresh and resets the timer.
+const usageTTL = 30 * time.Minute
+
+var (
+	usageCacheMu sync.Mutex
+	usageCache   = map[string]cachedUsage{}
+)
+
+type cachedUsage struct {
+	usage     accountUsage
+	fetchedAt time.Time
+}
+
+// accountUsage30m returns the account's usage, using the 30-minute cache unless
+// force is set. A successful fetch (forced or a cache miss) resets the timer.
+func accountUsage30m(ctx context.Context, account codexAccount, force bool) (accountUsage, error) {
+	key := account.cacheKey()
+	if !force {
+		usageCacheMu.Lock()
+		cached, ok := usageCache[key]
+		usageCacheMu.Unlock()
+		if ok && time.Since(cached.fetchedAt) < usageTTL {
+			return cached.usage, nil
+		}
+	}
+	usage, err := fetchAccountUsage(ctx, account)
+	if err != nil {
+		return accountUsage{}, err
+	}
+	usageCacheMu.Lock()
+	usageCache[key] = cachedUsage{usage: usage, fetchedAt: time.Now()}
+	usageCacheMu.Unlock()
+	return usage, nil
+}
 
 // pintr reads Codex rate limits from the same endpoint the Codex CLI uses. The
 // response exposes rolling windows; OpenAI enables/disables them per plan, so a

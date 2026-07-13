@@ -71,6 +71,12 @@ CREATE TABLE IF NOT EXISTS codex_accounts (
   UNIQUE(user_id, account_id)
 );
 CREATE INDEX IF NOT EXISTS idx_codex_accounts_user ON codex_accounts(user_id);
+CREATE TABLE IF NOT EXISTS oauth_sessions (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_sessions_user ON oauth_sessions(user_id);
 `
 
 func openStore(path string, secret []byte) (*store, error) {
@@ -269,6 +275,60 @@ func (s *store) tokenEpoch(ctx context.Context, userID string) (int, bool) {
 
 func (s *store) revokeTokens(ctx context.Context, userID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET token_epoch = token_epoch + 1 WHERE id = ?`, userID)
+	return err
+}
+
+// --- oauth sessions (issued MCP OAuth grants, individually revocable) ---
+
+type oauthSessionRow struct {
+	ID        string
+	CreatedAt string
+}
+
+func (s *store) createOAuthSession(ctx context.Context, userID string) (string, error) {
+	sid := newID("oas")
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO oauth_sessions (id, user_id, created_at) VALUES (?, ?, ?)`, sid, userID, nowUTC())
+	return sid, err
+}
+
+// oauthSessionValid reports whether an issued OAuth token is still good: its
+// session row exists and the user's token epoch still matches (so both a
+// per-session revoke and a global "revoke all" invalidate it).
+func (s *store) oauthSessionValid(ctx context.Context, sid, userID string, epoch int) bool {
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM oauth_sessions s JOIN users u ON u.id = s.user_id
+		 WHERE s.id = ? AND s.user_id = ? AND u.token_epoch = ?`, sid, userID, epoch).Scan(&one)
+	return err == nil
+}
+
+func (s *store) listOAuthSessions(ctx context.Context, userID string) ([]oauthSessionRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, created_at FROM oauth_sessions WHERE user_id = ? ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sessions := []oauthSessionRow{}
+	for rows.Next() {
+		var row oauthSessionRow
+		if err := rows.Scan(&row.ID, &row.CreatedAt); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, row)
+	}
+	return sessions, rows.Err()
+}
+
+func (s *store) deleteOAuthSession(ctx context.Context, userID, sid string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM oauth_sessions WHERE id = ? AND user_id = ?`, sid, userID)
+	return err
+}
+
+func (s *store) deleteAllOAuthSessions(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM oauth_sessions WHERE user_id = ?`, userID)
 	return err
 }
 

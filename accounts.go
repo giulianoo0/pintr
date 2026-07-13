@@ -27,7 +27,8 @@ func (f fileAccount) forceRefresh(ctx context.Context) (codexAuth, error) {
 	return toCodexAuth(auth), nil
 }
 
-func (f fileAccount) label() string { return "local" }
+func (f fileAccount) label() string    { return "local" }
+func (f fileAccount) cacheKey() string { return "local" }
 
 // dbAccount adapts one codex_accounts row (HTTP mode) to codexAccount. All
 // reads and writes are scoped to (userID, rowID) so users can only ever touch
@@ -78,6 +79,8 @@ func (d dbAccount) label() string {
 	}
 	return d.rowID
 }
+
+func (d dbAccount) cacheKey() string { return d.userID + ":" + d.rowID }
 
 // userCodexAccounts returns a user's linked accounts as codexAccounts, default
 // first (listCodexAccounts already orders by is_default DESC).
