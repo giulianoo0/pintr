@@ -145,7 +145,7 @@ func stdioGenerate(fileStore *authStore) generateHandler {
 func stdioUsage(fileStore *authStore) usageHandler {
 	return func(ctx context.Context, _ getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
 		// get_usage is an explicit check → fetch fresh and reset the cache timer.
-		usage, err := accountUsage30m(ctx, fileAccount{store: fileStore}, true)
+		usage, _, err := accountUsage30m(ctx, fileAccount{store: fileStore}, true)
 		if err != nil {
 			return nil, usageResult{}, err
 		}
@@ -191,7 +191,7 @@ func hostedUsage(st *store) usageHandler {
 		out := make([]accountUsage, 0, len(accounts))
 		for _, account := range accounts {
 			// get_usage is an explicit check → fetch fresh and reset the timer.
-			usage, err := accountUsage30m(ctx, account, true)
+			usage, _, err := accountUsage30m(ctx, account, true)
 			if err != nil {
 				logImage("usage fetch failed for %s: %v", account.label(), err)
 				continue

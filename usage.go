@@ -28,26 +28,28 @@ type cachedUsage struct {
 	fetchedAt time.Time
 }
 
-// accountUsage30m returns the account's usage, using the 30-minute cache unless
-// force is set. A successful fetch (forced or a cache miss) resets the timer.
-func accountUsage30m(ctx context.Context, account codexAccount, force bool) (accountUsage, error) {
+// accountUsage30m returns the account's usage and the time it was fetched, using
+// the 30-minute cache unless force is set. A successful fetch (forced or a cache
+// miss) resets the timer.
+func accountUsage30m(ctx context.Context, account codexAccount, force bool) (accountUsage, time.Time, error) {
 	key := account.cacheKey()
 	if !force {
 		usageCacheMu.Lock()
 		cached, ok := usageCache[key]
 		usageCacheMu.Unlock()
 		if ok && time.Since(cached.fetchedAt) < usageTTL {
-			return cached.usage, nil
+			return cached.usage, cached.fetchedAt, nil
 		}
 	}
 	usage, err := fetchAccountUsage(ctx, account)
 	if err != nil {
-		return accountUsage{}, err
+		return accountUsage{}, time.Time{}, err
 	}
+	now := time.Now()
 	usageCacheMu.Lock()
-	usageCache[key] = cachedUsage{usage: usage, fetchedAt: time.Now()}
+	usageCache[key] = cachedUsage{usage: usage, fetchedAt: now}
 	usageCacheMu.Unlock()
-	return usage, nil
+	return usage, now, nil
 }
 
 // pintr reads Codex rate limits from the same endpoint the Codex CLI uses. The

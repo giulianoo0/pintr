@@ -261,13 +261,23 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				csrfField(csrf), html.EscapeString(a.ID))
 
 			usageHTML := `<div class="limits">limits unavailable</div>`
+			freshHTML := ""
 			account := dbAccount{store: h.store, userID: session.User.ID, rowID: a.ID, display: orUnknown(a.Email)}
-			if usage, uerr := accountUsage30m(r.Context(), account, false); uerr == nil {
+			if usage, at, uerr := accountUsage30m(r.Context(), account, false); uerr == nil {
 				usageHTML = renderUsage(usage)
+				age := int(time.Since(at).Seconds())
+				if age < 0 {
+					age = 0
+				}
+				left := int(usageTTL.Seconds()) - age
+				if left < 0 {
+					left = 0
+				}
+				freshHTML = fmt.Sprintf(`<div class="fresh" data-age="%d" data-left="%d"></div>`, age, left)
 			}
 
-			fmt.Fprintf(&accountsPane, `<div class="acct"><div class="acct-hd"><b>%s</b> <span class="muted">%s%s</span></div>%s<div class="acct-ft">%s</div></div>`,
-				html.EscapeString(orUnknown(a.Email)), html.EscapeString(orUnknown(a.PlanType)), badge, usageHTML, actions)
+			fmt.Fprintf(&accountsPane, `<div class="acct"><div class="acct-hd"><b>%s</b> <span class="muted">%s%s</span></div>%s%s<div class="acct-ft">%s</div></div>`,
+				html.EscapeString(orUnknown(a.Email)), html.EscapeString(orUnknown(a.PlanType)), badge, usageHTML, freshHTML, actions)
 		}
 	}
 	fmt.Fprintf(&accountsPane, `<form method="post" action="/link/start" style="display:inline">%s<button type="submit">link a chatgpt account</button></form>`, csrfField(csrf))
@@ -345,6 +355,7 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		logoSVG, csrfField(csrf))
 	fmt.Fprintf(&body, `<main><section class="tabpane" id="p-accounts">%s</section><section class="tabpane" id="p-keys">%s</section><section class="tabpane" id="p-connect">%s</section><section class="tabpane" id="p-data">%s</section></main>`,
 		accountsPane.String(), keysPane.String(), connectPane, dataPane.String())
+	body.WriteString(freshTickerJS)
 
 	renderDashboard(w, "pintr dashboard", body.String())
 }
@@ -488,7 +499,7 @@ func (h *webHandlers) handleUsageRefresh(w http.ResponseWriter, r *http.Request)
 			return err
 		}
 		for _, account := range accounts {
-			if _, uerr := accountUsage30m(r.Context(), account, true); uerr != nil {
+			if _, _, uerr := accountUsage30m(r.Context(), account, true); uerr != nil {
 				log.Printf("usage refresh for %s: %v", account.label(), uerr)
 			}
 		}
@@ -716,6 +727,30 @@ func renderDashboard(w http.ResponseWriter, title, body string) {
 
 const setupRedirectURI = "http://localhost:1455/auth/callback"
 
+// freshTickerJS live-updates each ".fresh" element with "updated Xm ago · next
+// refresh in Ym Zs". It counts from server-provided data-age/data-left deltas
+// plus client-side elapsed time, so it isn't affected by clock skew.
+const freshTickerJS = `<script>
+(function(){
+  var start=Date.now();
+  function fmt(age,left){
+    var am=Math.floor(age/60);
+    var updated=am<1?'updated just now':'updated '+am+'m ago';
+    if(left<=0)return updated+' · refreshes on next load';
+    var lm=Math.floor(left/60),ls=Math.floor(left%60);
+    return updated+' · next refresh in '+lm+'m '+(ls<10?'0':'')+ls+'s';
+  }
+  function tick(){
+    var el=(Date.now()-start)/1000;
+    document.querySelectorAll('.fresh').forEach(function(n){
+      var age=(+n.dataset.age)+el, left=Math.max(0,(+n.dataset.left)-el);
+      n.textContent=fmt(age,left);
+    });
+  }
+  tick();setInterval(tick,1000);
+})();
+</script>`
+
 const styles = `*{box-sizing:border-box}
 body{background:#0f0f10;color:#e7e7e7;font-family:'Geist',system-ui,-apple-system,sans-serif;margin:0;line-height:1.55}
 header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
@@ -768,6 +803,7 @@ code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-
 .acct{border:1px solid #262626;border-radius:8px;padding:.7rem .85rem;margin:.5rem 0;background:#151517}
 .acct-hd{margin-bottom:.4rem}
 .acct-ft{margin-top:.5rem;font-size:.85rem}
+.fresh{color:#6f6f6f;font-size:.72rem;margin-top:.45rem}
 .limits{display:flex;flex-wrap:wrap;gap:.3rem 1.2rem}
 .lim{display:flex;align-items:center;gap:.5rem;font-size:.8rem;color:#bbb}
 .lim-k{min-width:3.2rem;color:#888;text-transform:uppercase;letter-spacing:.03em;font-size:.72rem}

@@ -167,7 +167,7 @@ func generateImage(ctx context.Context, accounts []codexAccount, prompt string, 
 			logImage("ok account=%s duration_ms=%d bytes=%d", account.label(), durationMs, len(png))
 			img := generatedImage{PNG: png, Model: model, Account: account.label(), DurationMs: durationMs}
 			// Best-effort: attach the account's remaining limits (cached, 30m).
-			if usage, uerr := accountUsage30m(ctx, account, false); uerr == nil {
+			if usage, _, uerr := accountUsage30m(ctx, account, false); uerr == nil {
 				img.Usage = &usage
 			} else {
 				logImage("usage fetch failed for %s: %v", account.label(), uerr)
