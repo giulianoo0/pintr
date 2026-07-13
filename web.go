@@ -130,10 +130,15 @@ func (h *webHandlers) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderPage(w, "pintr", `
-<p>pintr generates images through codex using your own chatgpt login, and
-exposes it as an mcp server. create an account to link one or more chatgpt
-accounts and get your access key.</p>
-<p><a href="/signup">create account</a> &nbsp;·&nbsp; <a href="/login">log in</a></p>`)
+<p class="lead">pintr turns your own ChatGPT login into an image generator any MCP
+client can call. It does <b>not</b> use the Codex CLI or any local tool — it just
+sends requests to the Codex image backend with your account's token.</p>
+<div class="cards">
+  <div class="card"><h3>your own login</h3><p>sign in with ChatGPT through OAuth. no API key, no extra billing to set up.</p></div>
+  <div class="card"><h3>no codex cli</h3><p>nothing to install or run locally — pintr just calls the codex image backend over HTTPS for you.</p></div>
+  <div class="card"><h3>any mcp client</h3><p>connect Claude Code, Claude Desktop, Codex, or a plain script. link one or more accounts.</p></div>
+</div>
+<div class="cta"><a href="/signup" class="btn">create account</a> <a href="/login">log in</a></div>`)
 }
 
 func (h *webHandlers) handleSignup(w http.ResponseWriter, r *http.Request) {
@@ -635,11 +640,18 @@ const pageShell = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>%s</title>
 <style>
-body{background:#0f0f10;color:#e7e7e7;font-family:system-ui,sans-serif;display:flex;justify-content:center;padding:3rem 1rem;line-height:1.5}
-main{max-width:44rem;width:100%%}
-h1{font-size:1.3rem;margin:0 0 1.5rem}
-h2{font-size:1rem;margin:2rem 0 .6rem;color:#bdbdbd}
-input,textarea{width:100%%;box-sizing:border-box;background:#1a1a1c;color:#e7e7e7;border:1px solid #333;border-radius:6px;padding:.55rem;margin:.35rem 0;font-family:inherit}
+*{box-sizing:border-box}
+body{background:#0f0f10;color:#e7e7e7;font-family:system-ui,sans-serif;margin:0;line-height:1.55}
+header{border-bottom:1px solid #222;background:#121214}
+header .bar{max-width:64rem;margin:0 auto;padding:1rem 1.5rem;display:flex;align-items:baseline;gap:.9rem;flex-wrap:wrap}
+.brand{font-size:1.3rem;font-weight:700;letter-spacing:-.01em;text-decoration:none;color:#fff}
+.brand b{color:#63b3ed}
+.tag{color:#8a8a8a;font-size:.85rem}
+main{max-width:64rem;margin:0 auto;padding:2rem 1.5rem}
+h2{font-size:1rem;margin:2.2rem 0 .6rem;color:#bdbdbd}
+h3{margin:0 0 .3rem;font-size:.95rem}
+.lead{font-size:1.1rem;color:#d4d4d4;max-width:44rem}
+input,textarea{width:100%%;box-sizing:border-box;background:#1a1a1c;color:#e7e7e7;border:1px solid #333;border-radius:6px;padding:.55rem;margin:.35rem 0;font-family:inherit;max-width:26rem}
 button{background:#2b6cb0;color:#fff;border:0;border-radius:6px;padding:.55rem 1.1rem;margin-top:.35rem;cursor:pointer;font-size:.95rem}
 a.btn{display:inline-block;background:#2b6cb0;color:#fff;border-radius:6px;padding:.55rem 1.1rem;text-decoration:none;font-size:.95rem}
 button.link{background:none;color:#63b3ed;padding:0;margin:0;font-size:.85rem}
@@ -653,6 +665,10 @@ h2.danger{color:#f87171;margin-top:2.5rem}
 .muted{color:#888;font-size:.85rem}
 a{color:#63b3ed}
 code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-all}
+.cards{display:flex;flex-wrap:wrap;gap:1rem;margin:1.6rem 0}
+.card{flex:1 1 15rem;border:1px solid #262626;border-radius:10px;padding:1.1rem;background:#151517}
+.card p{margin:0;color:#9a9a9a;font-size:.85rem}
+.cta{display:flex;gap:1rem;align-items:center;margin-top:1.5rem}
 .acct{border:1px solid #262626;border-radius:8px;padding:.7rem .85rem;margin:.5rem 0;background:#151517}
 .acct-hd{margin-bottom:.4rem}
 .acct-ft{margin-top:.5rem;font-size:.85rem}
@@ -662,4 +678,6 @@ code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-
 .lim-v{min-width:4.5rem}
 .bar{display:inline-block;width:90px;height:6px;background:#2a2a2e;border-radius:3px;overflow:hidden}
 .bar>span{display:block;height:100%%}
-</style></head><body><main><h1>pintr</h1>%s</main></body></html>`
+</style></head><body>
+<header><div class="bar"><a href="/" class="brand">p<b>i</b>ntr</a><span class="tag">codex image generation over MCP — no CLI, just requests</span></div></header>
+<main>%s</main></body></html>`
