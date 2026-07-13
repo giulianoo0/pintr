@@ -113,7 +113,10 @@ Assets (all content encrypted at rest; keys are returned once and never stored):
 - `POST /upload` — bearer-authed. Upload a raw reference image; the server
   encrypts it, stores only ciphertext, and returns `{ "ref": "ref_<id>.<key>" }`.
   Pass that handle in `generate_image`; it is fetched, decrypted, and deleted
-  from storage on use. Max 25 MiB; body must be an image.
+  from storage on use. Body must be an image. Size limit: the hosted server sits
+  behind Cloudflare, which caps request bodies at ~10 MB, so keep uploads under
+  ~10 MB (downscale large references); the server itself caps at 25 MiB. There
+  is no chunked/resumable upload — send the whole file in one request.
 - `GET /view?o=<objectKey>&k=<key>` — fetches a stored ciphertext, decrypts it
   server-side, and returns the raw image (`image/png`). This is what
   `decrypted_asset_url` points to.

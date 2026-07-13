@@ -129,22 +129,25 @@ func (h *webHandlers) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
 	}
-	renderPage(w, "pintr", `
-<p class="lead">pintr turns your own ChatGPT login into an image generator any MCP
-client can call. It does <b>not</b> use the Codex CLI or any local tool — it just
-sends requests to the Codex image backend with your account's token.</p>
-<div class="cards">
-  <div class="card"><h3>your own login</h3><p>sign in with ChatGPT through OAuth. no API key, no extra billing to set up.</p></div>
-  <div class="card"><h3>no codex cli</h3><p>nothing to install or run locally — pintr just calls the codex image backend over HTTPS for you.</p></div>
-  <div class="card"><h3>any mcp client</h3><p>connect Claude Code, Claude Desktop, Codex, or a plain script. link one or more accounts.</p></div>
+	renderPage(w, "pintr", navPublic(), `
+<div class="hero">
+  <h1 class="hero-title">Codex image generation, over MCP.</h1>
+  <p class="lead">pintr turns your own ChatGPT login into an image generator any
+  MCP client can call. Sign in, link one or more accounts, and generate — no API
+  key, nothing to install.</p>
+  <div class="cta"><a href="/signup" class="btn">create account</a> <a href="/login">log in</a></div>
 </div>
-<div class="cta"><a href="/signup" class="btn">create account</a> <a href="/login">log in</a></div>`)
+<div class="cards">
+  <div class="card"><h3>your own login</h3><p>sign in with ChatGPT through OAuth — no separate API key or billing to set up.</p></div>
+  <div class="card"><h3>encrypted by default</h3><p>generated images and uploads are encrypted at rest; the keys are returned once and never stored.</p></div>
+  <div class="card"><h3>any mcp client</h3><p>connect Claude Code, Claude Desktop, Codex, or a plain script over HTTPS.</p></div>
+</div>`)
 }
 
 func (h *webHandlers) handleSignup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		token := h.issueFormCSRF(w)
-		renderPage(w, "create account", fmt.Sprintf(`
+		renderPage(w, "create account", navPublic(), fmt.Sprintf(`
 <h2>create account</h2>
 <form method="post" action="/signup">
 %s
@@ -162,7 +165,7 @@ func (h *webHandlers) handleSignup(w http.ResponseWriter, r *http.Request) {
 
 	u, err := h.store.createUser(r.Context(), r.FormValue("email"), r.FormValue("password"))
 	if err != nil {
-		renderPage(w, "create account", `<p class="err">`+html.EscapeString(err.Error())+`</p><p><a href="/signup">try again</a></p>`)
+		renderPage(w, "create account", navPublic(), `<p class="err">`+html.EscapeString(err.Error())+`</p><p><a href="/signup">try again</a></p>`)
 		return
 	}
 	if err := h.setSession(w, r, u); err != nil {
@@ -178,7 +181,7 @@ func (h *webHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	next := sanitizeNext(r.FormValue("next"))
 	if r.Method != http.MethodPost {
 		token := h.issueFormCSRF(w)
-		renderPage(w, "log in", fmt.Sprintf(`
+		renderPage(w, "log in", navPublic(), fmt.Sprintf(`
 <h2>log in</h2>
 <form method="post" action="/login">
 %s
@@ -197,7 +200,7 @@ func (h *webHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	u, err := h.store.authenticateUser(r.Context(), r.FormValue("email"), r.FormValue("password"))
 	if err != nil {
-		renderPage(w, "log in", `<p class="err">`+html.EscapeString(err.Error())+`</p><p><a href="/login">try again</a></p>`)
+		renderPage(w, "log in", navPublic(), `<p class="err">`+html.EscapeString(err.Error())+`</p><p><a href="/login">try again</a></p>`)
 		return
 	}
 	if err := h.setSession(w, r, u); err != nil {
@@ -332,7 +335,7 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&body, `<section class="tabpane" id="p-data">%s</section>`, dataPane.String())
 	body.WriteString(`</div>`)
 
-	renderPage(w, "pintr dashboard", body.String())
+	renderPage(w, "pintr dashboard", navAuthed(), body.String())
 }
 
 // --- linking a chatgpt account (browser paste flow) ---
@@ -367,7 +370,7 @@ func (h *webHandlers) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	authorizeURL := buildAuthorizeURL(setupRedirectURI, challenge, state)
-	renderPage(w, "link chatgpt", fmt.Sprintf(`
+	renderPage(w, "link chatgpt", navAuthed(), fmt.Sprintf(`
 <h2>link a chatgpt account</h2>
 <p>1. sign in to openai:</p>
 <p><a href="%s" target="_blank" rel="noopener" class="btn">sign in with openai</a></p>
@@ -396,7 +399,7 @@ func (h *webHandlers) handleLinkFinish(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	linkErr := func(msg string) {
-		renderPage(w, "link chatgpt", `<p class="err">`+html.EscapeString(msg)+`</p><p><a href="/dashboard">back to dashboard</a></p>`)
+		renderPage(w, "link chatgpt", navAuthed(), `<p class="err">`+html.EscapeString(msg)+`</p><p><a href="/dashboard">back to dashboard</a></p>`)
 	}
 	if !exists || entry.userID != session.User.ID || time.Since(entry.createdAt) > loginTimeout {
 		linkErr("that link attempt expired or was not yours. start over from the dashboard.")
@@ -555,7 +558,7 @@ func (h *webHandlers) handleKeyCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	renderPage(w, "new access key", fmt.Sprintf(`
+	renderPage(w, "new access key", navAuthed(), fmt.Sprintf(`
 <h2>new access key</h2>
 <p>copy it now — it is shown only once:</p>
 <p><code>%s</code></p>
@@ -587,7 +590,7 @@ func renderConsent(w http.ResponseWriter, session sessionInfo, query url.Values)
 			fmt.Fprintf(&hidden, `<input type="hidden" name="%s" value="%s">`, key, html.EscapeString(value))
 		}
 	}
-	renderPage(w, "authorize", fmt.Sprintf(`
+	renderPage(w, "authorize", navAuthed(), fmt.Sprintf(`
 <h2>authorize mcp client</h2>
 <p>an mcp client wants to connect to pintr as <b>%s</b>.</p>
 <form method="post" action="/authorize">
@@ -652,14 +655,14 @@ func shortDate(rfc3339 string) string {
 	return rfc3339
 }
 
-func renderPage(w http.ResponseWriter, title, body string) {
+func renderPage(w http.ResponseWriter, title, headerRight, body string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Authenticated, user-specific pages: don't let a proxy cache them, and
 	// don't let another site frame them (clickjacking on the consent page).
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
-	fmt.Fprintf(w, pageShell, html.EscapeString(title), body)
+	fmt.Fprintf(w, pageShell, html.EscapeString(title), headerRight, body)
 }
 
 const setupRedirectURI = "http://localhost:1455/auth/callback"
@@ -670,12 +673,16 @@ const pageShell = `<!doctype html>
 <style>
 *{box-sizing:border-box}
 body{background:#0f0f10;color:#e7e7e7;font-family:system-ui,sans-serif;margin:0;line-height:1.55}
-header{border-bottom:1px solid #222;background:#121214}
-header .bar{max-width:64rem;margin:0 auto;padding:.85rem 1.5rem;display:flex;justify-content:flex-start;align-items:center;gap:.75rem;flex-wrap:wrap}
-.brand{font-size:1.25rem;font-weight:700;letter-spacing:-.01em;text-decoration:none;color:#fff;line-height:1.2}
-.brand b{color:#63b3ed;font-weight:700}
-.tag{color:#8a8a8a;font-size:.85rem}
-main{max-width:64rem;margin:0 auto;padding:1.8rem 1.5rem}
+header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.logo{display:inline-flex;align-items:center;gap:.5rem;text-decoration:none;color:#fff;font-weight:700;font-size:1.15rem;letter-spacing:-.01em}
+.logo svg{display:block}
+.nav{display:flex;align-items:center;gap:1.1rem;font-size:.9rem}
+.nav a{color:#bdbdbd;text-decoration:none;display:inline-flex;align-items:center}
+.nav a:hover{color:#fff}
+.nav a.btn-sm{background:#2b6cb0;color:#fff;border-radius:6px;padding:.4rem .85rem}
+main{max-width:64rem;margin:0 auto;padding:1.4rem 1.5rem 3rem}
+.hero{margin:1.5rem 0 .5rem}
+.hero-title{font-size:2rem;font-weight:750;letter-spacing:-.02em;margin:0 0 .6rem;line-height:1.15}
 .tabbar{display:flex;gap:.15rem;border-bottom:1px solid #262626;margin:1.1rem 0 1.4rem;flex-wrap:wrap}
 .tabbar label{padding:.5rem .9rem;cursor:pointer;color:#9a9a9a;border-bottom:2px solid transparent;font-size:.9rem;margin-bottom:-1px}
 .tabbar label:hover{color:#e7e7e7}
@@ -715,5 +722,23 @@ code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-
 .bar{display:inline-block;width:90px;height:6px;background:#2a2a2e;border-radius:3px;overflow:hidden}
 .bar>span{display:block;height:100%%}
 </style></head><body>
-<header><div class="bar"><a href="/" class="brand">p<b>i</b>ntr</a><span class="tag">codex image generation over MCP — no CLI, just requests</span></div></header>
+<header><a href="/" class="logo">` + logoSVG + `<span>pintr</span></a><nav class="nav">%s</nav></header>
 <main>%s</main></body></html>`
+
+const logoSVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5" fill="#2b6cb0"/><circle cx="9" cy="9.5" r="1.9" fill="#fff"/><path d="M4.5 17.5l4.3-4.3 3 3 3.4-3.9 4.3 5z" fill="#fff"/></svg>`
+
+const ghSVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 016 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>`
+
+func navGitHub() string {
+	return `<a class="gh" href="https://github.com/giulianoo0/pintr" target="_blank" rel="noopener" title="source on github">` + ghSVG + `</a>`
+}
+
+// navPublic is the header's right side for logged-out pages; navAuthed for
+// logged-in pages.
+func navPublic() string {
+	return navGitHub() + `<a href="/login">log in</a><a href="/signup" class="btn-sm">sign up</a>`
+}
+
+func navAuthed() string {
+	return navGitHub() + `<a href="/dashboard">dashboard</a>`
+}
