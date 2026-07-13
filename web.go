@@ -20,6 +20,7 @@ const (
 type webHandlers struct {
 	store         *store
 	provider      *oauthProvider
+	assets        *assetStore
 	secureCookies bool
 
 	mu      sync.Mutex
@@ -32,8 +33,8 @@ type pendingLink struct {
 	createdAt time.Time
 }
 
-func newWebHandlers(st *store, provider *oauthProvider, secure bool) *webHandlers {
-	return &webHandlers{store: st, provider: provider, secureCookies: secure, pending: map[string]pendingLink{}}
+func newWebHandlers(st *store, provider *oauthProvider, assets *assetStore, secure bool) *webHandlers {
+	return &webHandlers{store: st, provider: provider, assets: assets, secureCookies: secure, pending: map[string]pendingLink{}}
 }
 
 // --- session helpers (shared with oauth.go) ---
@@ -281,6 +282,20 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&body, `<form method="post" action="/keys/create">%s<input type="text" name="name" placeholder="key name (optional)"><button type="submit">new access key</button></form>`, csrfField(csrf))
 	fmt.Fprintf(&body, `<p><form method="post" action="/tokens/revoke" onsubmit="return confirm('sign out all mcp clients? they will have to authorize again.')">%s<button type="submit" class="link danger">revoke all mcp tokens</button></form></p>`, csrfField(csrf))
 
+	body.WriteString(`<h2>generated assets</h2>`)
+	if h.assets == nil {
+		body.WriteString(`<p>asset storage is not configured on this server.</p>`)
+	} else {
+		count, err := h.assets.countAssets(r.Context(), session.User.ID)
+		if err != nil {
+			log.Printf("dashboard: count assets: %v", err)
+			body.WriteString(`<p>your generated images are stored encrypted. the decryption keys are only returned when an image is generated and are never saved here, so they can't be viewed from this page.</p>`)
+		} else {
+			fmt.Fprintf(&body, `<p>%d encrypted image(s) stored. decryption keys are only returned at generation time and never saved here, so images can't be viewed from this page.</p>`, count)
+		}
+		fmt.Fprintf(&body, `<form method="post" action="/assets/purge" onsubmit="return confirm('permanently delete ALL your stored images? this cannot be undone.')">%s<button type="submit" class="link danger">delete all assets</button></form>`, csrfField(csrf))
+	}
+
 	body.WriteString(`<h2>connect an mcp client</h2><p>point your client at <code>` + html.EscapeString(h.provider.resourceURL) + `</code> and it will walk you through login. for example:</p><p><code>claude mcp add --transport http pintr ` + html.EscapeString(h.provider.resourceURL) + `</code></p>`)
 
 	renderPage(w, "pintr dashboard", body.String())
@@ -403,6 +418,22 @@ func (h *webHandlers) handleKeyRemove(w http.ResponseWriter, r *http.Request) {
 func (h *webHandlers) handleRevokeTokens(w http.ResponseWriter, r *http.Request) {
 	h.mutate(w, r, func(session sessionInfo) error {
 		return h.store.revokeTokens(r.Context(), session.User.ID)
+	})
+}
+
+// handleAssetsPurge deletes all of the user's stored (encrypted) images.
+func (h *webHandlers) handleAssetsPurge(w http.ResponseWriter, r *http.Request) {
+	h.mutate(w, r, func(session sessionInfo) error {
+		if h.assets == nil {
+			return nil
+		}
+		deleted, err := h.assets.deleteAll(r.Context(), session.User.ID)
+		if err != nil {
+			log.Printf("purge assets for %s: %v", session.User.ID, err)
+			return err
+		}
+		log.Printf("purged %d assets for %s", deleted, session.User.ID)
+		return nil
 	})
 }
 

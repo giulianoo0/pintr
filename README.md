@@ -87,12 +87,21 @@ for scripts and curl, send your access key directly:
 | field | required | what it is |
 | --- | --- | --- |
 | `prompt` | yes | the full image prompt |
-| `output_path` | yes | where to save the png |
-| `reference_images` | no | file paths sent with the prompt to lock a look or a character |
+| `reference_images` | no | reference images to anchor a look or character: base64 or `data:` urls (hosted), or file paths (local stdio). not stored anywhere |
+| `output_path` | no | local stdio mode only: where to write the png. ignored by the hosted server |
 
 the driver model is fixed to `gpt-5.6-terra` server-side, so callers cannot pass
-a bogus model. it returns the saved path, the model, the account used, and how
-long it took.
+a bogus model.
+
+delivery differs by mode:
+
+- **hosted**: the png is encrypted with a fresh per-image key, uploaded to your
+  object storage as ciphertext, and the tool returns a presigned `asset_url`
+  plus a one-time `decryption_key`. the key is returned only in that response
+  and is never stored, so the bucket (and pintr) only ever hold ciphertext, and
+  the dashboard cannot show your images — only delete them. download `asset_url`
+  and decrypt with the key (AES-256-GCM, 12-byte nonce prefixed) to get the png.
+- **local stdio**: the png is written to `output_path`.
 
 ## host it yourself
 

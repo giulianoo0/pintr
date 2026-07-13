@@ -33,19 +33,32 @@ const (
 var cookiePrimeURLs = []string{"https://chatgpt.com/", "https://chat.openai.com/"}
 
 // generateImageArgs is the MCP tool input. There is deliberately no model
-// field: the driver model is fixed server-side (gpt-5.6-terra) so callers can't
-// pass a hallucinated model id.
+// field (the driver model is fixed server-side) and no server output path — the
+// hosted server never writes to a caller-chosen path.
 type generateImageArgs struct {
 	Prompt          string   `json:"prompt" jsonschema:"the full image prompt to render"`
-	OutputPath      string   `json:"output_path" jsonschema:"absolute path where the generated PNG will be saved"`
-	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional file paths of reference images to send with the prompt"`
+	OutputPath      string   `json:"output_path,omitempty" jsonschema:"local (stdio) mode only: absolute path to save the PNG. Ignored by the hosted server."`
+	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images sent with the prompt, each a base64 string or a data: URL (hosted), or a local file path (stdio mode). Not stored anywhere."`
 }
 
 type generateImageResult struct {
-	SavedPath  string `json:"saved_path"`
-	Model      string `json:"model"`
-	Account    string `json:"account"`
-	DurationMs int64  `json:"duration_ms"`
+	AssetURL      string `json:"asset_url,omitempty"`
+	DecryptionKey string `json:"decryption_key,omitempty"`
+	SavedPath     string `json:"saved_path,omitempty"`
+	Model         string `json:"model"`
+	Account       string `json:"account"`
+	DurationMs    int64  `json:"duration_ms"`
+	SizeBytes     int    `json:"size_bytes,omitempty"`
+}
+
+// generatedImage is the raw result of a generation, before delivery. The caller
+// decides how to deliver it (write a local file in stdio mode, or encrypt and
+// upload in hosted mode).
+type generatedImage struct {
+	PNG        []byte
+	Model      string
+	Account    string
+	DurationMs int64
 }
 
 // codexAuth is the minimal credential a single request needs.
@@ -105,26 +118,21 @@ type codexRequest struct {
 	Store        bool           `json:"store"`
 }
 
-func generateImage(ctx context.Context, accounts []codexAccount, args generateImageArgs) (generateImageResult, error) {
-	prompt := strings.TrimSpace(args.Prompt)
+// generateImage runs the generation and returns the PNG bytes. referenceDataURLs
+// must already be resolved to data: URLs by the caller (so the hosted server can
+// forbid file-path references and only accept inline attachments).
+func generateImage(ctx context.Context, accounts []codexAccount, prompt string, referenceDataURLs []string) (generatedImage, error) {
+	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
-		return generateImageResult{}, errors.New("prompt is required")
-	}
-	outputPath := strings.TrimSpace(args.OutputPath)
-	if outputPath == "" {
-		return generateImageResult{}, errors.New("output_path is required")
+		return generatedImage{}, errors.New("prompt is required")
 	}
 	if len(accounts) == 0 {
-		return generateImageResult{}, errors.New("no ChatGPT account linked — add one at pintr.giuli.dev")
+		return generatedImage{}, errors.New("no ChatGPT account linked — add one at pintr.giuli.dev")
 	}
 	model := imageModel()
 
 	content := []codexContent{{Type: "input_text", Text: prompt}}
-	for _, referencePath := range args.ReferenceImages {
-		dataURL, err := imageFileToDataURL(referencePath)
-		if err != nil {
-			return generateImageResult{}, fmt.Errorf("reference image %q: %w", referencePath, err)
-		}
+	for _, dataURL := range referenceDataURLs {
 		content = append(content, codexContent{Type: "input_image", ImageURL: dataURL})
 	}
 
@@ -141,75 +149,101 @@ func generateImage(ctx context.Context, accounts []codexAccount, args generateIm
 		Store:  false,
 	})
 	if err != nil {
-		return generateImageResult{}, err
+		return generatedImage{}, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
-		return generateImageResult{}, err
-	}
-
-	logImage("model=%s accounts=%d refs=%d prompt=%q", model, len(accounts), len(args.ReferenceImages), truncate(prompt, 120))
+	logImage("model=%s accounts=%d refs=%d prompt=%q", model, len(accounts), len(referenceDataURLs), truncate(prompt, 120))
 
 	// Try each linked account in order (default first); fail over on error so
 	// one rate-limited account doesn't block generation.
 	var lastErr error
 	for _, account := range accounts {
-		result, err := runOneGeneration(ctx, account, model, body, outputPath)
+		png, durationMs, err := runOneGeneration(ctx, account, body)
 		if err == nil {
-			logImage("ok account=%s duration_ms=%d saved=%s", account.label(), result.DurationMs, outputPath)
-			return result, nil
+			logImage("ok account=%s duration_ms=%d bytes=%d", account.label(), durationMs, len(png))
+			return generatedImage{PNG: png, Model: model, Account: account.label(), DurationMs: durationMs}, nil
 		}
 		lastErr = err
 		logImage("account=%s failed: %v", account.label(), err)
 	}
-	return generateImageResult{}, fmt.Errorf("all %d account(s) failed: %w", len(accounts), lastErr)
+	return generatedImage{}, fmt.Errorf("all %d account(s) failed: %w", len(accounts), lastErr)
 }
 
-func runOneGeneration(ctx context.Context, account codexAccount, model string, body []byte, outputPath string) (generateImageResult, error) {
+func runOneGeneration(ctx context.Context, account codexAccount, body []byte) ([]byte, int64, error) {
 	startedAt := time.Now()
 
 	auth, err := account.fresh(ctx)
 	if err != nil {
-		return generateImageResult{}, err
+		return nil, 0, err
 	}
 
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return generateImageResult{}, err
+		return nil, 0, err
 	}
 	client := &http.Client{Jar: jar}
 	primeCookies(ctx, client)
 
 	resp, err := postCodexResponses(ctx, client, auth, body)
 	if err != nil {
-		return generateImageResult{}, err
+		return nil, 0, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
 		if auth, err = account.forceRefresh(ctx); err != nil {
-			return generateImageResult{}, err
+			return nil, 0, err
 		}
 		if resp, err = postCodexResponses(ctx, client, auth, body); err != nil {
-			return generateImageResult{}, err
+			return nil, 0, err
 		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return generateImageResult{}, fmt.Errorf("codex request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(detail)))
+		return nil, 0, fmt.Errorf("codex request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(detail)))
 	}
 
-	if err := consumeImageStream(resp.Body, outputPath); err != nil {
-		return generateImageResult{}, err
+	png, err := consumeImageStream(resp.Body)
+	if err != nil {
+		return nil, 0, err
 	}
+	return png, time.Since(startedAt).Milliseconds(), nil
+}
 
-	return generateImageResult{
-		SavedPath:  outputPath,
-		Model:      model,
-		Account:    account.label(),
-		DurationMs: time.Since(startedAt).Milliseconds(),
-	}, nil
+// resolveReferences turns caller-provided references into data: URLs. When
+// allowFiles is false (hosted server) only base64 / data: URLs are accepted —
+// never a filesystem path, so a caller can't make the server read arbitrary
+// files.
+func resolveReferences(refs []string, allowFiles bool) ([]string, error) {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		dataURL, err := resolveReference(ref, allowFiles)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, dataURL)
+	}
+	return out, nil
+}
+
+func resolveReference(ref string, allowFiles bool) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", errors.New("empty reference image")
+	}
+	if isDataURL(ref) {
+		return ref, nil
+	}
+	if raw, err := base64.StdEncoding.DecodeString(ref); err == nil && len(raw) > 0 {
+		if mime := http.DetectContentType(raw); strings.HasPrefix(mime, "image/") {
+			return "data:" + mime + ";base64," + ref, nil
+		}
+	}
+	if allowFiles {
+		return imageFileToDataURL(ref)
+	}
+	return "", errors.New("reference images must be a base64 image or a data: URL")
 }
 
 func truncate(s string, max int) string {
@@ -260,15 +294,15 @@ func primeCookies(ctx context.Context, client *http.Client) {
 	}
 }
 
-// consumeImageStream reads the Codex SSE stream, writing every partial_image
-// payload over outputPath so the file always holds the latest (finally the
-// complete) image.
-func consumeImageStream(body io.Reader, outputPath string) error {
+// consumeImageStream reads the Codex SSE stream and returns the latest (finally
+// the complete) image bytes. Partial images overwrite earlier ones, so the last
+// one is the finished render.
+func consumeImageStream(body io.Reader) ([]byte, error) {
 	reader := bufio.NewReader(body)
 
 	var event string
 	var data strings.Builder
-	saved := false
+	var latest []byte
 	failure := ""
 
 	dispatch := func() error {
@@ -292,10 +326,7 @@ func consumeImageStream(body io.Reader, outputPath string) error {
 			if err != nil {
 				return fmt.Errorf("decoding partial image: %w", err)
 			}
-			if err := os.WriteFile(outputPath, imageBytes, 0o644); err != nil {
-				return err
-			}
-			saved = true
+			latest = imageBytes
 		case "response.failed", "error":
 			failure = extractSSEError(data.String())
 		}
@@ -308,7 +339,7 @@ func consumeImageStream(body io.Reader, outputPath string) error {
 		switch {
 		case line == "":
 			if err := dispatch(); err != nil {
-				return err
+				return nil, err
 			}
 		case strings.HasPrefix(line, "event:"):
 			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
@@ -318,22 +349,22 @@ func consumeImageStream(body io.Reader, outputPath string) error {
 
 		if readErr != nil {
 			if dispatchErr := dispatch(); dispatchErr != nil {
-				return dispatchErr
+				return nil, dispatchErr
 			}
 			if readErr != io.EOF {
-				return readErr
+				return nil, readErr
 			}
 			break
 		}
 	}
 
-	if !saved {
+	if latest == nil {
 		if failure != "" {
-			return fmt.Errorf("codex failed: %s", failure)
+			return nil, fmt.Errorf("codex failed: %s", failure)
 		}
-		return errors.New("codex finished without returning image bytes")
+		return nil, errors.New("codex finished without returning image bytes")
 	}
-	return nil
+	return latest, nil
 }
 
 func extractSSEError(raw string) string {
