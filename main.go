@@ -296,6 +296,7 @@ func serveHTTP(addr string) {
 	mux.HandleFunc("/keys/remove", web.handleKeyRemove)
 	mux.HandleFunc("/tokens/revoke", web.handleRevokeTokens)
 	mux.HandleFunc("/assets/purge", web.handleAssetsPurge)
+	mux.HandleFunc("/account/delete", web.handleDeleteAccount)
 	mux.HandleFunc("/view", web.handleView)
 	mux.HandleFunc("/", web.handleIndex)
 

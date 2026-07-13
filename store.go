@@ -272,6 +272,14 @@ func (s *store) revokeTokens(ctx context.Context, userID string) error {
 	return err
 }
 
+// deleteUser removes the user and everything owned by them. Sessions, access
+// keys, and linked codex accounts are removed by the ON DELETE CASCADE foreign
+// keys (foreign_keys pragma is on). Stored S3 assets are deleted separately.
+func (s *store) deleteUser(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
+	return err
+}
+
 func (s *store) authenticateUser(ctx context.Context, email, password string) (user, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	var id, hash string

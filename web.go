@@ -304,6 +304,10 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	body.WriteString(`<h2>connect an mcp client</h2><p>point your client at <code>` + html.EscapeString(h.provider.resourceURL) + `</code> and it will walk you through login. for example:</p><p><code>claude mcp add --transport http pintr ` + html.EscapeString(h.provider.resourceURL) + `</code></p>`)
 
+	fmt.Fprintf(&body, `<h2 class="danger">danger zone</h2>
+<p>delete your account and <b>everything</b> tied to it — linked chatgpt accounts, access keys, sessions, and all stored images. this is permanent and cannot be undone.</p>
+<form method="post" action="/account/delete" onsubmit="return confirm('Delete your account and ALL data permanently? This cannot be undone.')">%s<button type="submit" class="danger-btn">delete my account</button></form>`, csrfField(csrf))
+
 	renderPage(w, "pintr dashboard", body.String())
 }
 
@@ -425,6 +429,36 @@ func (h *webHandlers) handleRevokeTokens(w http.ResponseWriter, r *http.Request)
 	h.mutate(w, r, func(session sessionInfo) error {
 		return h.store.revokeTokens(r.Context(), session.User.ID)
 	})
+}
+
+// handleDeleteAccount permanently deletes the user and everything they own:
+// stored images in S3, then the DB row (which cascades to sessions, access
+// keys, and linked codex accounts).
+func (h *webHandlers) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	session, ok := h.requireSession(w, r)
+	if !ok {
+		return
+	}
+	if !h.checkCSRF(w, r, session) {
+		return
+	}
+	// Delete stored assets first; if that fails, keep the account so nothing is
+	// left half-deleted and the user can retry.
+	if h.assets != nil {
+		if _, err := h.assets.deleteAll(r.Context(), session.User.ID); err != nil {
+			log.Printf("delete account: purge assets for %s: %v", session.User.ID, err)
+			http.Error(w, "could not delete your stored images — account NOT deleted, please try again", http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := h.store.deleteUser(r.Context(), session.User.ID); err != nil {
+		log.Printf("delete account %s: %v", session.User.ID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	h.clearSessionCookie(w)
+	log.Printf("deleted account %s (%s)", session.User.ID, session.User.Email)
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 // handleAssetsPurge deletes all of the user's stored (encrypted) images.
@@ -581,6 +615,8 @@ table{width:100%%;border-collapse:collapse;margin:.5rem 0}
 th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid #262626;font-size:.9rem}
 th{color:#888;font-weight:500}
 .err{color:#f87171}.ok{color:#4ade80}
+h2.danger{color:#f87171;margin-top:2.5rem}
+.danger-btn{background:#7f1d1d;color:#fff}
 .muted{color:#888;font-size:.85rem}
 a{color:#63b3ed}
 code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-all}
