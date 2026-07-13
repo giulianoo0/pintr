@@ -1,0 +1,7 @@
+# build output (the compiled binary; matches the module name and older names)
+/pintr
+/framesmith
+*.exe
+
+# saved OAuth tokens
+auth.json
