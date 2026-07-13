@@ -37,7 +37,7 @@ var cookiePrimeURLs = []string{"https://chatgpt.com/", "https://chat.openai.com/
 // server writes) — delivery is decided by the server per mode.
 type generateImageArgs struct {
 	Prompt          string   `json:"prompt" jsonschema:"the full image prompt to render"`
-	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style. On the hosted server, upload each image first (POST the raw bytes to <public-url>/upload with your bearer token) and pass the returned short handle (ref_...) here — keeps the image out of the model context. A data: URL or base64 also works for small images. In local (stdio) mode, pass file paths. References are sent to Codex for this one request and never stored (uploads are deleted right after use)."`
+	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style, passed as short handles. Do NOT base64-encode or inline images — that bloats context. To get a handle, upload the RAW image bytes to the server's /upload endpoint (e.g. https://pintr.giuli.dev/upload) with your bearer token, e.g.: curl -s -X POST https://pintr.giuli.dev/upload -H \"Authorization: Bearer <token-or-pintr_key>\" --data-binary @image.png ; it returns {\"ref\":\"ref_...\"}. Pass those ref_... handles here. (In local stdio mode, pass a file path instead.) References go to Codex for this one request and are never stored; uploads are deleted right after use."`
 }
 
 type generateImageResult struct {

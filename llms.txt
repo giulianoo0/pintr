@@ -79,10 +79,10 @@ dashboard. Keep it secret — anyone with it can generate on your linked account
 Generate an image. Input:
 - `prompt` (string, required) — the full image prompt.
 - `reference_images` (string[], optional) — images to anchor a character or
-  style. Hosted: upload each via POST /upload and pass the returned `ref_...`
-  handle (a data: URL or base64 also works for small images). Stdio: file paths.
-  References are sent to Codex for the one request and never stored; hosted
-  uploads are deleted immediately after use.
+  style, passed as short handles. Do NOT base64-encode or inline images — upload
+  the RAW bytes to POST /upload (see below) and pass the returned `ref_...`
+  handle. Stdio: pass file paths. References are sent to Codex for the one
+  request and never stored; hosted uploads are deleted immediately after use.
 
 Result (hosted): `asset_url` (presigned ciphertext), `decrypted_asset_url` (open
 in a browser to view the decrypted PNG), `decryption_key`, `mime_type`, `model`,
