@@ -37,15 +37,11 @@ go build -o pintr .
 
 open the printed url, sign in, done. the tokens are saved for later.
 
-if you are on a server with no browser, forward the port from your laptop and
-run login there:
-
-```
-ssh -L 1455:127.0.0.1:1455 you@server 'cd pintr && ./pintr login'
-```
-
-then open the url in your laptop browser. the callback comes back through the
-tunnel. you can also just copy an `auth.json` from your laptop to the server.
+on a server there is an easier way: open `https://your-host/setup` in your
+browser, enter the access key, click the openai link and sign in. the browser
+then fails to open a `localhost:1455` page, which is expected. copy that url
+from the address bar, paste it back into the setup page, done. no ssh tunnel
+needed.
 
 ## use it locally (stdio)
 
@@ -67,25 +63,33 @@ it walks you through the login first.
 
 ## use it through pintr.giuli.dev (http)
 
-`pintr.giuli.dev` runs pintr in http mode behind a bearer token. add it to
-claude code as a remote server:
+`pintr.giuli.dev` runs pintr in http mode. it speaks the standard mcp oauth
+flow, so you do not paste any token into your config. just add the url:
 
 ```
-claude mcp add --transport http --scope user pintr https://pintr.giuli.dev \
-  --header "Authorization: Bearer YOUR_TOKEN"
+claude mcp add --transport http --scope user pintr https://pintr.giuli.dev
 ```
 
-ask the host owner for the token. every request needs that header or it gets a
-401.
+the first time the client connects it gets a 401, discovers the oauth
+endpoints, and opens your browser. you type the access key once on the consent
+page and the client gets its own token (with automatic refresh). the same flow
+works in any mcp client that supports remote servers: claude code, claude
+desktop (add a custom connector with the url), codex, and so on.
+
+for plain scripts and curl you can still send the access key directly as
+`Authorization: Bearer <access key>`.
 
 to run the http server yourself:
 
 ```
-MCP_AUTH_TOKEN=your-secret ./pintr -http 127.0.0.1:8090
+MCP_AUTH_TOKEN=your-secret PINTR_PUBLIC_URL=https://your-host ./pintr -http 127.0.0.1:8090
 ```
 
-put a normal reverse proxy (nginx, caddy) with https in front of it. the server
-streams its replies, so turn response buffering off in the proxy.
+`MCP_AUTH_TOKEN` is the access key: it guards the consent page and `/setup`,
+and signs the tokens pintr issues. `PINTR_PUBLIC_URL` is the public https url
+clients use to reach the server. put a normal reverse proxy (nginx, caddy) with
+https in front of it. the server streams its replies, so turn response
+buffering off in the proxy.
 
 ## the tool: generate_image
 

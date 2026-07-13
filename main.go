@@ -13,7 +13,6 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"flag"
 	"log"
 	"net/http"
@@ -51,9 +50,9 @@ func main() {
 		// here. If auth is missing, start anyway and let tool calls return an
 		// actionable error until `pintr login` is run once.
 		if _, err := store.load(); err != nil {
-			log.Printf("warning: not logged in yet (%v) — run `pintr login`; serving anyway", err)
+			log.Printf("warning: not linked to ChatGPT yet (%v) — run `pintr login` or open /setup; serving anyway", err)
 		}
-		serveHTTP(server, *httpAddr)
+		serveHTTP(server, store, *httpAddr)
 		return
 	}
 
@@ -81,40 +80,42 @@ func newMCPServer(store *authStore) *mcp.Server {
 	return server
 }
 
-func serveHTTP(server *mcp.Server, addr string) {
-	authToken := os.Getenv("MCP_AUTH_TOKEN")
-	if authToken == "" {
+func serveHTTP(server *mcp.Server, store *authStore, addr string) {
+	accessKey := os.Getenv("MCP_AUTH_TOKEN")
+	if accessKey == "" {
 		log.Fatal("HTTP mode requires MCP_AUTH_TOKEN to be set — refusing to expose the server unauthenticated")
 	}
+	publicURL := os.Getenv("PINTR_PUBLIC_URL")
+	if publicURL == "" {
+		publicURL = "https://pintr.giuli.dev"
+	}
 
-	handler := mcp.NewStreamableHTTPHandler(
+	provider := newOAuthProvider(publicURL, accessKey, store)
+
+	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
 		// Localhost protection would 403 proxied requests (they arrive on
-		// 127.0.0.1 with Host pintr.giuli.dev); the bearer check below is the
+		// 127.0.0.1 with Host pintr.giuli.dev); provider.requireAuth is the
 		// real gate.
 		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true},
 	)
 
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-protected-resource", provider.handleProtectedResourceMetadata)
+	mux.HandleFunc("/.well-known/oauth-authorization-server", provider.handleAuthServerMetadata)
+	mux.HandleFunc("/register", provider.handleRegister)
+	mux.HandleFunc("/authorize", provider.handleAuthorize)
+	mux.HandleFunc("/token", provider.handleToken)
+	mux.Handle("/setup", newSetupHandler(provider))
+	mux.Handle("/", provider.requireAuth(mcpHandler))
+
 	httpServer := &http.Server{
 		Addr:              addr,
-		Handler:           requireBearer(authToken, handler),
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("pintr listening on %s", addr)
+	log.Printf("pintr listening on %s (public url %s)", addr, publicURL)
 	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("http server: %v", err)
 	}
-}
-
-func requireBearer(token string, next http.Handler) http.Handler {
-	expected := []byte("Bearer " + token)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := []byte(r.Header.Get("Authorization"))
-		if len(got) != len(expected) || subtle.ConstantTimeCompare(got, expected) != 1 {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
