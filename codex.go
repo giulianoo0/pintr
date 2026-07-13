@@ -20,8 +20,10 @@ import (
 
 const (
 	codexResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
-	codexVersion      = "0.137.0"
-	codexUserAgent    = "codex_cli_rs/" + codexVersion
+	// Advertise a current Codex version; newer image models (gpt-5.6-terra)
+	// 400 if the server thinks the client is too old.
+	codexVersion   = "0.144.3"
+	codexUserAgent = "codex_cli_rs/" + codexVersion
 	codexInstructions = "You are Codex. Follow the user request exactly."
 	defaultImageModel = "gpt-5.6-terra"
 )
