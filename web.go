@@ -296,8 +296,10 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 <p>create a key in the access keys tab, then pass it as a header:</p>
 <p><code>claude mcp add --transport http pintr ` + resource + ` --header "Authorization: Bearer pintr_YOURKEY"</code></p>`
 
-	// --- data pane (assets + danger zone) ---
+	// --- data pane (account identity + assets + danger zone) ---
 	var dataPane strings.Builder
+	fmt.Fprintf(&dataPane, `<p class="whoami">signed in as <span class="email" title="hover to reveal">%s</span></p>`,
+		html.EscapeString(session.User.Email))
 	dataPane.WriteString(`<h2>generated assets</h2>`)
 	if h.assets == nil {
 		dataPane.WriteString(`<p>asset storage is not configured on this server.</p>`)
@@ -315,27 +317,22 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 <p>delete your account and <b>everything</b> tied to it — linked chatgpt accounts, access keys, sessions, and all stored images. permanent, cannot be undone.</p>
 <form method="post" action="/account/delete" onsubmit="return confirm('Delete your account and ALL data permanently? This cannot be undone.')">%s<button type="submit" class="danger-btn">delete my account</button></form>`, csrfField(csrf))
 
+	// Radios first, then the header (with the sliding tabs + logout), then the
+	// panes in <main> — so the CSS-only tabs (#radio:checked ~ header/main …)
+	// can reach both the header indicator and the panes.
 	var body strings.Builder
-	fmt.Fprintf(&body, `<p class="muted">signed in as <b>%s</b> · <form method="post" action="/logout" style="display:inline">%s<button type="submit" class="link">log out</button></form></p>`,
-		html.EscapeString(session.User.Email), csrfField(csrf))
-	body.WriteString(`<div class="tabs">
-<input type="radio" name="dtab" id="t-accounts" checked>
-<input type="radio" name="dtab" id="t-keys">
-<input type="radio" name="dtab" id="t-connect">
-<input type="radio" name="dtab" id="t-data">
-<nav class="tabbar">
-<label for="t-accounts">chatgpt accounts</label>
-<label for="t-keys">access keys</label>
-<label for="t-connect">connect</label>
-<label for="t-data">data</label>
-</nav>`)
-	fmt.Fprintf(&body, `<section class="tabpane" id="p-accounts">%s</section>`, accountsPane.String())
-	fmt.Fprintf(&body, `<section class="tabpane" id="p-keys">%s</section>`, keysPane.String())
-	fmt.Fprintf(&body, `<section class="tabpane" id="p-connect">%s</section>`, connectPane)
-	fmt.Fprintf(&body, `<section class="tabpane" id="p-data">%s</section>`, dataPane.String())
-	body.WriteString(`</div>`)
+	body.WriteString(`<input class="dtab" type="radio" name="dtab" id="t-accounts" checked>
+<input class="dtab" type="radio" name="dtab" id="t-keys">
+<input class="dtab" type="radio" name="dtab" id="t-connect">
+<input class="dtab" type="radio" name="dtab" id="t-data">`)
+	fmt.Fprintf(&body, `<header><a href="/" class="logo">%s<span>pintr</span></a>
+<nav class="tabs"><span class="slider"></span><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label></nav>
+<form method="post" action="/logout" class="logout">%s<button type="submit" class="link">log out</button></form></header>`,
+		logoSVG, csrfField(csrf))
+	fmt.Fprintf(&body, `<main><section class="tabpane" id="p-accounts">%s</section><section class="tabpane" id="p-keys">%s</section><section class="tabpane" id="p-connect">%s</section><section class="tabpane" id="p-data">%s</section></main>`,
+		accountsPane.String(), keysPane.String(), connectPane, dataPane.String())
 
-	renderPage(w, "pintr dashboard", navAuthed(), body.String())
+	renderDashboard(w, "pintr dashboard", body.String())
 }
 
 // --- linking a chatgpt account (browser paste flow) ---
@@ -655,25 +652,32 @@ func shortDate(rfc3339 string) string {
 	return rfc3339
 }
 
-func renderPage(w http.ResponseWriter, title, headerRight, body string) {
+func securePageHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Authenticated, user-specific pages: don't let a proxy cache them, and
 	// don't let another site frame them (clickjacking on the consent page).
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+}
+
+func renderPage(w http.ResponseWriter, title, headerRight, body string) {
+	securePageHeaders(w)
 	fmt.Fprintf(w, pageShell, html.EscapeString(title), headerRight, body)
+}
+
+// renderDashboard renders the tabbed dashboard; body is the full <input>s +
+// <header> + <main> markup built by handleDashboard.
+func renderDashboard(w http.ResponseWriter, title, body string) {
+	securePageHeaders(w)
+	fmt.Fprintf(w, dashShell, html.EscapeString(title), body)
 }
 
 const setupRedirectURI = "http://localhost:1455/auth/callback"
 
-const pageShell = `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>%s</title>
-<style>
-*{box-sizing:border-box}
+const styles = `*{box-sizing:border-box}
 body{background:#0f0f10;color:#e7e7e7;font-family:system-ui,sans-serif;margin:0;line-height:1.55}
-header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem}
+header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
 .logo{display:inline-flex;align-items:center;gap:.5rem;text-decoration:none;color:#fff;font-weight:700;font-size:1.15rem;letter-spacing:-.01em}
 .logo svg{display:block}
 .nav{display:flex;align-items:center;gap:1.1rem;font-size:.9rem}
@@ -683,14 +687,22 @@ header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-it
 main{max-width:64rem;margin:0 auto;padding:1.4rem 1.5rem 3rem}
 .hero{margin:1.5rem 0 .5rem}
 .hero-title{font-size:2rem;font-weight:750;letter-spacing:-.02em;margin:0 0 .6rem;line-height:1.15}
-.tabbar{display:flex;gap:.15rem;border-bottom:1px solid #262626;margin:1.1rem 0 1.4rem;flex-wrap:wrap}
-.tabbar label{padding:.5rem .9rem;cursor:pointer;color:#9a9a9a;border-bottom:2px solid transparent;font-size:.9rem;margin-bottom:-1px}
-.tabbar label:hover{color:#e7e7e7}
-.tabs>input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+input.dtab{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.tabs{position:relative;display:flex;background:#141416;border:1px solid #262626;border-radius:9px;padding:3px}
+.tabs .slider{position:absolute;top:3px;left:3px;bottom:3px;width:calc((100%% - 6px)/4);background:#2b6cb0;border-radius:6px;transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:0}
+.tabs label{position:relative;z-index:1;flex:1;text-align:center;padding:.34rem .8rem;font-size:.85rem;color:#c9c9c9;cursor:pointer;white-space:nowrap;border-radius:6px}
+.tabs label:hover{color:#fff}
+#t-accounts:checked~header .slider{transform:translateX(0)}
+#t-keys:checked~header .slider{transform:translateX(100%%)}
+#t-connect:checked~header .slider{transform:translateX(200%%)}
+#t-data:checked~header .slider{transform:translateX(300%%)}
+#t-accounts:checked~header label[for=t-accounts],#t-keys:checked~header label[for=t-keys],#t-connect:checked~header label[for=t-connect],#t-data:checked~header label[for=t-data]{color:#fff}
 .tabpane{display:none}
-.tabpane h2:first-child{margin-top:.4rem}
-#t-accounts:checked~#p-accounts,#t-keys:checked~#p-keys,#t-connect:checked~#p-connect,#t-data:checked~#p-data{display:block}
-#t-accounts:checked~.tabbar label[for=t-accounts],#t-keys:checked~.tabbar label[for=t-keys],#t-connect:checked~.tabbar label[for=t-connect],#t-data:checked~.tabbar label[for=t-data]{color:#fff;border-bottom-color:#2b6cb0}
+#t-accounts:checked~main #p-accounts,#t-keys:checked~main #p-keys,#t-connect:checked~main #p-connect,#t-data:checked~main #p-data{display:block}
+.logout{display:inline;margin:0}
+.whoami{color:#888;font-size:.85rem}
+.email{filter:blur(4.5px);transition:filter .15s ease;cursor:default}
+.email:hover{filter:none}
 h2{font-size:1rem;margin:2.2rem 0 .6rem;color:#bdbdbd}
 h3{margin:0 0 .3rem;font-size:.95rem}
 .lead{font-size:1.1rem;color:#d4d4d4;max-width:44rem}
@@ -720,10 +732,21 @@ code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-
 .lim-k{min-width:3.2rem;color:#888;text-transform:uppercase;letter-spacing:.03em;font-size:.72rem}
 .lim-v{min-width:4.5rem}
 .bar{display:inline-block;width:90px;height:6px;background:#2a2a2e;border-radius:3px;overflow:hidden}
-.bar>span{display:block;height:100%%}
-</style></head><body>
+.bar>span{display:block;height:100%%}`
+
+const docHead = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>%s</title>
+<style>` + styles + `</style></head><body>`
+
+// pageShell: public/simple pages — logo left, nav right. Verbs: title, nav, body.
+const pageShell = docHead + `
 <header><a href="/" class="logo">` + logoSVG + `<span>pintr</span></a><nav class="nav">%s</nav></header>
 <main>%s</main></body></html>`
+
+// dashShell: the dashboard — the whole body (radios + header-with-tabs + main)
+// is built by handleDashboard. Verbs: title, body.
+const dashShell = docHead + `%s</body></html>`
 
 const logoSVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5" fill="#2b6cb0"/><circle cx="9" cy="9.5" r="1.9" fill="#fff"/><path d="M4.5 17.5l4.3-4.3 3 3 3.4-3.9 4.3 5z" fill="#fff"/></svg>`
 
