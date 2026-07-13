@@ -345,15 +345,15 @@ func (h *webHandlers) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 	authorizeURL := buildAuthorizeURL(setupRedirectURI, challenge, state)
 	renderPage(w, "link chatgpt", fmt.Sprintf(`
 <h2>link a chatgpt account</h2>
-<p>1. open this link and sign in to openai:</p>
-<p><a href="%s" target="_blank" rel="noopener">%s</a></p>
+<p>1. sign in to openai:</p>
+<p><a href="%s" target="_blank" rel="noopener" class="btn">sign in with openai</a></p>
 <p>2. your browser then tries to open a <code>localhost:1455</code> page and fails — that is expected. copy the full url from the address bar and paste it here:</p>
 <form method="post" action="/link/finish">
 %s
 <input type="hidden" name="state" value="%s">
 <textarea name="callback_url" rows="4" placeholder="http://localhost:1455/auth/callback?code=..." autofocus></textarea>
 <button type="submit">finish linking</button>
-</form>`, html.EscapeString(authorizeURL), html.EscapeString(authorizeURL), csrfField(html.EscapeString(session.CSRF)), html.EscapeString(state)))
+</form>`, html.EscapeString(authorizeURL), csrfField(html.EscapeString(session.CSRF)), html.EscapeString(state)))
 }
 
 func (h *webHandlers) handleLinkFinish(w http.ResponseWriter, r *http.Request) {
@@ -609,6 +609,7 @@ h1{font-size:1.3rem;margin:0 0 1.5rem}
 h2{font-size:1rem;margin:2rem 0 .6rem;color:#bdbdbd}
 input,textarea{width:100%%;box-sizing:border-box;background:#1a1a1c;color:#e7e7e7;border:1px solid #333;border-radius:6px;padding:.55rem;margin:.35rem 0;font-family:inherit}
 button{background:#2b6cb0;color:#fff;border:0;border-radius:6px;padding:.55rem 1.1rem;margin-top:.35rem;cursor:pointer;font-size:.95rem}
+a.btn{display:inline-block;background:#2b6cb0;color:#fff;border-radius:6px;padding:.55rem 1.1rem;text-decoration:none;font-size:.95rem}
 button.link{background:none;color:#63b3ed;padding:0;margin:0;font-size:.85rem}
 button.danger{color:#f87171}
 table{width:100%%;border-collapse:collapse;margin:.5rem 0}
