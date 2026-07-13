@@ -163,19 +163,9 @@ func (h *webHandlers) handleSignup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	key, err := h.store.createAccessKey(r.Context(), u.ID, "default")
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	renderPage(w, "welcome", fmt.Sprintf(`
-<h2>account created</h2>
-<p>this is your access key. it is shown only once — copy it now:</p>
-<p><code>%s</code></p>
-<p>you can use it directly as <code>Authorization: Bearer &lt;key&gt;</code>, or just
-add the server to your mcp client and log in through the browser.</p>
-<p>next: link a chatgpt account so image generation works.</p>
-<p><a href="/dashboard">go to dashboard</a></p>`, html.EscapeString(key)))
+	// No access key is minted at signup: most people connect through the MCP
+	// OAuth flow, and can create a key from the dashboard if they want one.
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
 func (h *webHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {

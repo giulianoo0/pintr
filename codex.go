@@ -37,7 +37,7 @@ var cookiePrimeURLs = []string{"https://chatgpt.com/", "https://chat.openai.com/
 // server writes) — delivery is decided by the server per mode.
 type generateImageArgs struct {
 	Prompt          string   `json:"prompt" jsonschema:"the full image prompt to render"`
-	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images sent with the prompt, each a base64 string or a data: URL (hosted), or a local file path (stdio mode). Not stored anywhere."`
+	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style. In local (stdio) mode pass file paths and pintr reads them. On the hosted server pass the image content itself (a data: URL or base64) — as the agent, read the user's local image file yourself and pass its bytes, since a remote server cannot read files off the user's machine. References are sent to Codex for this one request and never stored."`
 }
 
 type generateImageResult struct {
@@ -253,7 +253,7 @@ func resolveReference(ref string, allowFiles bool) (string, error) {
 	if allowFiles {
 		return imageFileToDataURL(ref)
 	}
-	return "", errors.New("reference images must be a base64 image or a data: URL")
+	return "", errors.New("reference image looks like a file path — this is a remote server and can't read your local files; read the image and pass its bytes (a data: URL or base64) instead")
 }
 
 func truncate(s string, max int) string {
