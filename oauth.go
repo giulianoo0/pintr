@@ -1,27 +1,27 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
 
-// pintr acts as both the OAuth 2.1 resource server and authorization server
-// for MCP clients (per the MCP authorization spec: RFC 9728 protected
-// resource metadata, RFC 8414 AS metadata, RFC 7591 dynamic registration,
-// authorization-code + PKCE, RFC 8707 resource audience binding).
+// pintr is both the OAuth 2.1 resource server and authorization server for MCP
+// clients (MCP authorization spec: RFC 9728 protected resource metadata, RFC
+// 8414 AS metadata, RFC 7591 dynamic registration, auth-code + PKCE, RFC 8707
+// resource audience binding). The resource owner is a pintr user: the authorize
+// step requires a logged-in dashboard session, and issued tokens carry the
+// user id so MCP calls resolve to that user's linked Codex accounts.
 //
-// Everything is stateless: client ids, authorization codes, and tokens are
-// HMAC-signed JSON blobs keyed off the access key, so restarts don't
-// invalidate sessions and nothing needs a database.
+// Codes and tokens are stateless HMAC-signed JSON blobs (key derived from the
+// server secret), so restarts keep sessions valid without a token table.
 
 const (
 	authCodeTTL     = 5 * time.Minute
@@ -29,26 +29,22 @@ const (
 	refreshTokenTTL = 90 * 24 * time.Hour
 )
 
+type ctxKey string
+
+const ctxUserKey ctxKey = "pintr-user"
+
 type oauthProvider struct {
-	publicURL string // canonical base, e.g. https://pintr.giuli.dev
-	accessKey string // shared secret: consent-page key, legacy bearer, HMAC key source
-	store     *authStore
+	publicURL   string // https://pintr.giuli.dev
+	resourceURL string // canonical MCP resource: publicURL + "/mcp"
+	store       *store
 }
 
-func newOAuthProvider(publicURL, accessKey string, store *authStore) *oauthProvider {
-	return &oauthProvider{
-		publicURL: strings.TrimRight(publicURL, "/"),
-		accessKey: accessKey,
-		store:     store,
-	}
+func newOAuthProvider(publicURL string, st *store) *oauthProvider {
+	base := strings.TrimRight(publicURL, "/")
+	return &oauthProvider{publicURL: base, resourceURL: base + "/mcp", store: st}
 }
 
-func (p *oauthProvider) signingKey() []byte {
-	sum := sha256.Sum256([]byte("pintr-oauth-signing:" + p.accessKey))
-	return sum[:]
-}
-
-// --- signed blob helpers ---
+// --- signed blobs ---
 
 func (p *oauthProvider) sign(payload any) (string, error) {
 	raw, err := json.Marshal(payload)
@@ -56,7 +52,7 @@ func (p *oauthProvider) sign(payload any) (string, error) {
 		return "", err
 	}
 	body := base64.RawURLEncoding.EncodeToString(raw)
-	mac := hmac.New(sha256.New, p.signingKey())
+	mac := hmac.New(sha256.New, p.store.signingKey())
 	mac.Write([]byte(body))
 	return body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
@@ -70,7 +66,7 @@ func (p *oauthProvider) verify(blob string, payload any) bool {
 	if err != nil {
 		return false
 	}
-	mac := hmac.New(sha256.New, p.signingKey())
+	mac := hmac.New(sha256.New, p.store.signingKey())
 	mac.Write([]byte(body))
 	if !hmac.Equal(mac.Sum(nil), wantSig) {
 		return false
@@ -83,13 +79,14 @@ func (p *oauthProvider) verify(blob string, payload any) bool {
 }
 
 type clientBlob struct {
-	Kind         string   `json:"k"` // "client"
+	Kind         string   `json:"k"`
 	RedirectURIs []string `json:"r"`
 	IssuedAt     int64    `json:"iat"`
 }
 
 type codeBlob struct {
-	Kind          string `json:"k"` // "code"
+	Kind          string `json:"k"`
+	UserID        string `json:"uid"`
 	ClientID      string `json:"c"`
 	RedirectURI   string `json:"u"`
 	CodeChallenge string `json:"ch"`
@@ -99,15 +96,16 @@ type codeBlob struct {
 
 type tokenBlob struct {
 	Kind     string `json:"k"` // "access" | "refresh"
+	UserID   string `json:"uid"`
 	Audience string `json:"aud"`
 	Expires  int64  `json:"exp"`
 }
 
-// --- metadata endpoints ---
+// --- metadata ---
 
 func (p *oauthProvider) handleProtectedResourceMetadata(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{
-		"resource":                 p.publicURL,
+		"resource":                 p.resourceURL,
 		"authorization_servers":    []string{p.publicURL},
 		"bearer_methods_supported": []string{"header"},
 	})
@@ -126,14 +124,13 @@ func (p *oauthProvider) handleAuthServerMetadata(w http.ResponseWriter, _ *http.
 	})
 }
 
-// --- dynamic client registration (RFC 7591) ---
+// --- dynamic client registration ---
 
 func (p *oauthProvider) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	var req struct {
 		RedirectURIs []string `json:"redirect_uris"`
 		ClientName   string   `json:"client_name"`
@@ -158,7 +155,6 @@ func (p *oauthProvider) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, map[string]any{
 		"client_id":                  clientID,
@@ -184,7 +180,7 @@ func validRedirectURI(raw string) bool {
 	return parsed.Scheme == "http" && isLoopback
 }
 
-// --- authorization endpoint ---
+// --- authorize ---
 
 func (p *oauthProvider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
@@ -233,26 +229,34 @@ func (p *oauthProvider) handleAuthorize(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if resource == "" {
-		resource = p.publicURL
+		resource = p.resourceURL
 	}
-	if !strings.EqualFold(resource, p.publicURL) {
-		redirectError("invalid_target", "resource must be "+p.publicURL)
+	if !strings.EqualFold(resource, p.resourceURL) {
+		redirectError("invalid_target", "resource must be "+p.resourceURL)
 		return
 	}
 
-	// GET renders the consent form; POST checks the access key and redirects
-	// back to the client with a code.
-	if r.Method != http.MethodPost {
-		renderAuthorizePage(w, query, "")
+	// The resource owner must be a logged-in pintr user.
+	session, ok := sessionFromRequest(r, p.store)
+	if !ok {
+		next := "/authorize?" + r.URL.Query().Encode()
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(next), http.StatusFound)
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(query.Get("access_key")), []byte(p.accessKey)) != 1 {
-		renderAuthorizePage(w, query, "wrong access key")
+
+	// GET renders consent; POST (with a valid CSRF token) grants the code.
+	if r.Method != http.MethodPost {
+		renderConsent(w, session, r.URL.Query())
+		return
+	}
+	if query.Get("csrf") != session.CSRF {
+		http.Error(w, "bad csrf token", http.StatusBadRequest)
 		return
 	}
 
 	code, err := p.sign(codeBlob{
 		Kind:          "code",
+		UserID:        session.User.ID,
 		ClientID:      clientID,
 		RedirectURI:   redirectURI,
 		CodeChallenge: challenge,
@@ -263,7 +267,6 @@ func (p *oauthProvider) handleAuthorize(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
 	target, _ := url.Parse(redirectURI)
 	params := target.Query()
 	params.Set("code", code)
@@ -283,27 +286,7 @@ func redirectURIRegistered(uri string, registered []string) bool {
 	return false
 }
 
-func renderAuthorizePage(w http.ResponseWriter, query url.Values, problem string) {
-	var hidden strings.Builder
-	for _, key := range []string{"client_id", "redirect_uri", "response_type", "state", "code_challenge", "code_challenge_method", "resource", "scope"} {
-		if value := query.Get(key); value != "" {
-			fmt.Fprintf(&hidden, `<input type="hidden" name="%s" value="%s">`, key, html.EscapeString(value))
-		}
-	}
-	notice := ""
-	if problem != "" {
-		notice = `<p class="err">` + html.EscapeString(problem) + `</p>`
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, pageShell, "authorize pintr", notice+`
-<p>an mcp client wants to use this pintr server. paste the access key to allow it.</p>
-<form method="post" action="/authorize">`+hidden.String()+`
-<input type="password" name="access_key" placeholder="access key" autofocus>
-<button type="submit">allow</button>
-</form>`)
-}
-
-// --- token endpoint ---
+// --- token ---
 
 func (p *oauthProvider) handleToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -314,7 +297,6 @@ func (p *oauthProvider) handleToken(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid_request", "body must be form-encoded")
 		return
 	}
-
 	switch r.PostForm.Get("grant_type") {
 	case "authorization_code":
 		p.tokenFromCode(w, r)
@@ -343,15 +325,13 @@ func (p *oauthProvider) tokenFromCode(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "client_id mismatch")
 		return
 	}
-
 	verifier := r.PostForm.Get("code_verifier")
 	sum := sha256.Sum256([]byte(verifier))
 	if verifier == "" || base64.RawURLEncoding.EncodeToString(sum[:]) != code.CodeChallenge {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		return
 	}
-
-	p.issueTokens(w, code.Resource)
+	p.issueTokens(w, code.UserID, code.Resource)
 }
 
 func (p *oauthProvider) tokenFromRefresh(w http.ResponseWriter, r *http.Request) {
@@ -364,16 +344,16 @@ func (p *oauthProvider) tokenFromRefresh(w http.ResponseWriter, r *http.Request)
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "refresh token expired")
 		return
 	}
-	p.issueTokens(w, refresh.Audience)
+	p.issueTokens(w, refresh.UserID, refresh.Audience)
 }
 
-func (p *oauthProvider) issueTokens(w http.ResponseWriter, audience string) {
-	access, err := p.sign(tokenBlob{Kind: "access", Audience: audience, Expires: time.Now().Add(accessTokenTTL).Unix()})
+func (p *oauthProvider) issueTokens(w http.ResponseWriter, userID, audience string) {
+	access, err := p.sign(tokenBlob{Kind: "access", UserID: userID, Audience: audience, Expires: time.Now().Add(accessTokenTTL).Unix()})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	refresh, err := p.sign(tokenBlob{Kind: "refresh", Audience: audience, Expires: time.Now().Add(refreshTokenTTL).Unix()})
+	refresh, err := p.sign(tokenBlob{Kind: "refresh", UserID: userID, Audience: audience, Expires: time.Now().Add(refreshTokenTTL).Unix()})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -386,43 +366,51 @@ func (p *oauthProvider) issueTokens(w http.ResponseWriter, audience string) {
 	})
 }
 
-// --- bearer validation for MCP requests ---
+// --- request auth for /mcp ---
 
-// authenticate accepts either the static access key (scripts, curl) or an
-// access token this server issued for itself (RFC 8707 audience check).
-func (p *oauthProvider) authenticate(r *http.Request) bool {
-	header := r.Header.Get("Authorization")
-	bearer, found := strings.CutPrefix(header, "Bearer ")
+// authenticatedUser resolves the caller from either an issued OAuth access
+// token (audience-checked) or a personal access key.
+func (p *oauthProvider) authenticatedUser(r *http.Request) (user, bool) {
+	bearer, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !found {
-		return false
+		return user{}, false
 	}
-	if subtle.ConstantTimeCompare([]byte(bearer), []byte(p.accessKey)) == 1 {
-		return true
+	if strings.HasPrefix(bearer, "pintr_") {
+		return p.store.userForAccessKey(r.Context(), bearer)
 	}
 
 	var token tokenBlob
 	if !p.verify(bearer, &token) || token.Kind != "access" {
-		return false
+		return user{}, false
 	}
 	if time.Now().Unix() > token.Expires {
-		return false
+		return user{}, false
 	}
-	return strings.EqualFold(strings.TrimRight(token.Audience, "/"), p.publicURL)
+	if !strings.EqualFold(strings.TrimRight(token.Audience, "/"), p.resourceURL) {
+		return user{}, false
+	}
+	return user{ID: token.UserID}, true
 }
 
 func (p *oauthProvider) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !p.authenticate(r) {
+		u, ok := p.authenticatedUser(r)
+		if !ok {
 			w.Header().Set("WWW-Authenticate",
 				fmt.Sprintf(`Bearer resource_metadata=%q`, p.publicURL+"/.well-known/oauth-protected-resource"))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxUserKey, u)))
 	})
 }
 
-// --- helpers ---
+func userFromContext(ctx context.Context) (user, bool) {
+	u, ok := ctx.Value(ctxUserKey).(user)
+	return u, ok
+}
+
+// --- shared helpers ---
 
 func writeJSON(w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -432,22 +420,5 @@ func writeJSON(w http.ResponseWriter, payload any) {
 func oauthError(w http.ResponseWriter, status int, code, description string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"error":             code,
-		"error_description": description,
-	})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "error_description": description})
 }
-
-const pageShell = `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>%s</title>
-<style>
-body{background:#111;color:#eee;font-family:system-ui,sans-serif;display:flex;justify-content:center;padding:3rem 1rem}
-main{max-width:32rem;width:100%%}
-h1{font-size:1.2rem}
-input,textarea{width:100%%;box-sizing:border-box;background:#1c1c1c;color:#eee;border:1px solid #333;border-radius:6px;padding:.6rem;margin:.4rem 0;font-family:inherit}
-button{background:#2b6cb0;color:#fff;border:0;border-radius:6px;padding:.6rem 1.2rem;margin-top:.4rem;cursor:pointer}
-.err{color:#f87171}.ok{color:#4ade80}
-a{color:#63b3ed;word-break:break-all}
-code{background:#1c1c1c;padding:.1rem .3rem;border-radius:4px}
-</style></head><body><main><h1>pintr</h1>%s</main></body></html>`

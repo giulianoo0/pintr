@@ -135,10 +135,25 @@ func (s *authStore) forceRefresh(ctx context.Context) (storedAuth, error) {
 }
 
 func (s *authStore) refreshLocked(ctx context.Context) (storedAuth, error) {
+	updated, err := refreshStoredAuth(ctx, *s.auth)
+	if err != nil {
+		return storedAuth{}, err
+	}
+	if err := s.save(&updated); err != nil {
+		return storedAuth{}, fmt.Errorf("saving refreshed auth: %w", err)
+	}
+	s.auth = &updated
+	return updated, nil
+}
+
+// refreshStoredAuth exchanges the refresh token for a new access token. It does
+// not persist anything — the caller decides where to store the result — so the
+// file store and the DB store share this one implementation.
+func refreshStoredAuth(ctx context.Context, auth storedAuth) (storedAuth, error) {
 	body, err := json.Marshal(map[string]string{
 		"client_id":     oauthClientID,
 		"grant_type":    "refresh_token",
-		"refresh_token": s.auth.RefreshToken,
+		"refresh_token": auth.RefreshToken,
 	})
 	if err != nil {
 		return storedAuth{}, err
@@ -166,14 +181,9 @@ func (s *authStore) refreshLocked(ctx context.Context) (storedAuth, error) {
 		return storedAuth{}, fmt.Errorf("token refresh: decoding response: %w", err)
 	}
 
-	updated := *s.auth
-	updated.apply(payload)
-	updated.LastRefresh = time.Now().UTC()
-	if err := s.save(&updated); err != nil {
-		return storedAuth{}, fmt.Errorf("saving refreshed auth: %w", err)
-	}
-	s.auth = &updated
-	return updated, nil
+	auth.apply(payload)
+	auth.LastRefresh = time.Now().UTC()
+	return auth, nil
 }
 
 func needsRefresh(auth *storedAuth, now time.Time) bool {

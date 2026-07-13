@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"os"
@@ -29,17 +30,52 @@ const (
 // a cookie jar before posting (same trick crevn uses).
 var cookiePrimeURLs = []string{"https://chatgpt.com/", "https://chat.openai.com/"}
 
+// generateImageArgs is the MCP tool input. There is deliberately no model
+// field: the driver model is fixed server-side (gpt-5.6-terra) so callers can't
+// pass a hallucinated model id.
 type generateImageArgs struct {
 	Prompt          string   `json:"prompt" jsonschema:"the full image prompt to render"`
 	OutputPath      string   `json:"output_path" jsonschema:"absolute path where the generated PNG will be saved"`
 	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional file paths of reference images to send with the prompt"`
-	Model           string   `json:"model,omitempty" jsonschema:"image model override; defaults to gpt-5.6-terra"`
 }
 
 type generateImageResult struct {
 	SavedPath  string `json:"saved_path"`
 	Model      string `json:"model"`
+	Account    string `json:"account"`
 	DurationMs int64  `json:"duration_ms"`
+}
+
+// codexAuth is the minimal credential a single request needs.
+type codexAuth struct {
+	AccessToken string
+	AccountID   string
+	Fedramp     bool
+}
+
+func toCodexAuth(auth storedAuth) codexAuth {
+	return codexAuth{AccessToken: auth.AccessToken, AccountID: auth.AccountID, Fedramp: auth.Fedramp}
+}
+
+// codexAccount is one linked ChatGPT account that can hand out a fresh access
+// token and force a refresh after a 401. Both the local file store and the
+// per-user DB rows implement it, so generateImage works the same in stdio and
+// hosted modes.
+type codexAccount interface {
+	fresh(ctx context.Context) (codexAuth, error)
+	forceRefresh(ctx context.Context) (codexAuth, error)
+	label() string
+}
+
+func imageModel() string {
+	if override := strings.TrimSpace(os.Getenv("PINTR_IMAGE_MODEL")); override != "" {
+		return override
+	}
+	return defaultImageModel
+}
+
+func logImage(format string, args ...any) {
+	log.Printf("[generate_image] "+format, args...)
 }
 
 type codexContent struct {
@@ -67,9 +103,7 @@ type codexRequest struct {
 	Store        bool           `json:"store"`
 }
 
-func generateImage(ctx context.Context, store *authStore, args generateImageArgs) (generateImageResult, error) {
-	startedAt := time.Now()
-
+func generateImage(ctx context.Context, accounts []codexAccount, args generateImageArgs) (generateImageResult, error) {
 	prompt := strings.TrimSpace(args.Prompt)
 	if prompt == "" {
 		return generateImageResult{}, errors.New("prompt is required")
@@ -78,10 +112,10 @@ func generateImage(ctx context.Context, store *authStore, args generateImageArgs
 	if outputPath == "" {
 		return generateImageResult{}, errors.New("output_path is required")
 	}
-	model := strings.TrimSpace(args.Model)
-	if model == "" {
-		model = defaultImageModel
+	if len(accounts) == 0 {
+		return generateImageResult{}, errors.New("no ChatGPT account linked — add one at pintr.giuli.dev")
 	}
+	model := imageModel()
 
 	content := []codexContent{{Type: "input_text", Text: prompt}}
 	for _, referencePath := range args.ReferenceImages {
@@ -112,7 +146,27 @@ func generateImage(ctx context.Context, store *authStore, args generateImageArgs
 		return generateImageResult{}, err
 	}
 
-	auth, err := store.fresh(ctx)
+	logImage("model=%s accounts=%d refs=%d prompt=%q", model, len(accounts), len(args.ReferenceImages), truncate(prompt, 120))
+
+	// Try each linked account in order (default first); fail over on error so
+	// one rate-limited account doesn't block generation.
+	var lastErr error
+	for _, account := range accounts {
+		result, err := runOneGeneration(ctx, account, model, body, outputPath)
+		if err == nil {
+			logImage("ok account=%s duration_ms=%d saved=%s", account.label(), result.DurationMs, outputPath)
+			return result, nil
+		}
+		lastErr = err
+		logImage("account=%s failed: %v", account.label(), err)
+	}
+	return generateImageResult{}, fmt.Errorf("all %d account(s) failed: %w", len(accounts), lastErr)
+}
+
+func runOneGeneration(ctx context.Context, account codexAccount, model string, body []byte, outputPath string) (generateImageResult, error) {
+	startedAt := time.Now()
+
+	auth, err := account.fresh(ctx)
 	if err != nil {
 		return generateImageResult{}, err
 	}
@@ -130,7 +184,7 @@ func generateImage(ctx context.Context, store *authStore, args generateImageArgs
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
-		if auth, err = store.forceRefresh(ctx); err != nil {
+		if auth, err = account.forceRefresh(ctx); err != nil {
 			return generateImageResult{}, err
 		}
 		if resp, err = postCodexResponses(ctx, client, auth, body); err != nil {
@@ -151,11 +205,19 @@ func generateImage(ctx context.Context, store *authStore, args generateImageArgs
 	return generateImageResult{
 		SavedPath:  outputPath,
 		Model:      model,
+		Account:    account.label(),
 		DurationMs: time.Since(startedAt).Milliseconds(),
 	}, nil
 }
 
-func postCodexResponses(ctx context.Context, client *http.Client, auth storedAuth, body []byte) (*http.Response, error) {
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
+func postCodexResponses(ctx context.Context, client *http.Client, auth codexAuth, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexResponsesURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
