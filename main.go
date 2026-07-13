@@ -78,10 +78,11 @@ func newMCPServer(generate generateHandler, usage usageHandler) *mcp.Server {
 		Name: "generate_image",
 		Description: "Generate an image with the Codex image model (GPT Image, gpt-5.6-terra). " +
 			"Optionally pass reference_images to anchor characters or style. " +
-			"On the hosted server, open decrypted_asset_url from the result to view the image — it returns the " +
-			"decrypted PNG (image/png) directly, no decryption needed on your side. (asset_url is the raw encrypted " +
-			"ciphertext and decryption_key is its key, if you'd rather fetch and decrypt it yourself.) " +
-			"The result also includes the account's remaining rate limits under usage.",
+			"ALWAYS look at the image after generating: open decrypted_asset_url from the result (hosted) or read " +
+			"saved_path (local stdio) and view it, so you can confirm it matches the request before continuing. " +
+			"decrypted_asset_url returns the decrypted PNG (image/png) directly, no decryption needed on your side. " +
+			"(asset_url is the raw encrypted ciphertext and decryption_key is its key, if you'd rather fetch and " +
+			"decrypt it yourself.) The result also includes the account's remaining rate limits under usage.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 		return generate(ctx, args)
 	})
