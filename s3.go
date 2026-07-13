@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -26,6 +27,15 @@ type assetStore struct {
 	presign    *s3.PresignClient
 	bucket     string
 	presignTTL time.Duration
+
+	// When publicHost is set (PINTR_S3_PUBLIC_BASE, e.g. an R2 custom domain
+	// bound to the bucket), download URLs are presigned for that host with the
+	// object key as the path (no bucket prefix). These creds are kept for that
+	// hand-rolled signing.
+	publicHost string
+	accessKey  string
+	secretKey  string
+	region     string
 }
 
 // newAssetStore builds the store from PINTR_S3_* env vars. It returns (nil, nil)
@@ -55,6 +65,38 @@ func newAssetStore() *assetStore {
 		presign:    s3.NewPresignClient(client),
 		bucket:     bucket,
 		presignTTL: 24 * time.Hour,
+		publicHost: hostOnly(os.Getenv("PINTR_S3_PUBLIC_BASE")),
+		accessKey:  keyID,
+		secretKey:  secret,
+		region:     region,
+	}
+}
+
+// hostOnly strips scheme and trailing slash so "https://pintr-assets.giuli.dev/"
+// becomes "pintr-assets.giuli.dev".
+func hostOnly(base string) string {
+	base = strings.TrimSpace(base)
+	base = strings.TrimPrefix(base, "https://")
+	base = strings.TrimPrefix(base, "http://")
+	return strings.TrimRight(base, "/")
+}
+
+// ensureCORS best-effort allows browsers to fetch the (encrypted) objects, so
+// the /view page can download and decrypt them client-side.
+func (a *assetStore) ensureCORS(ctx context.Context) {
+	_, err := a.client.PutBucketCors(ctx, &s3.PutBucketCorsInput{
+		Bucket: &a.bucket,
+		CORSConfiguration: &types.CORSConfiguration{
+			CORSRules: []types.CORSRule{{
+				AllowedMethods: []string{"GET"},
+				AllowedOrigins: []string{"*"},
+				AllowedHeaders: []string{"*"},
+				MaxAgeSeconds:  aws.Int32(3600),
+			}},
+		},
+	})
+	if err != nil {
+		log.Printf("warning: could not set bucket CORS (the /view page may fail to fetch): %v", err)
 	}
 }
 
@@ -101,14 +143,27 @@ func (a *assetStore) putEncrypted(ctx context.Context, userID string, png []byte
 		return storedAsset{}, err
 	}
 
+	downloadURL, err := a.presignGet(ctx, objectKey)
+	if err != nil {
+		return storedAsset{}, err
+	}
+	return storedAsset{URL: downloadURL, KeyB64: base64.StdEncoding.EncodeToString(key)}, nil
+}
+
+// presignGet returns a presigned download URL — on the public custom domain when
+// configured, otherwise on the S3 API endpoint via the SDK.
+func (a *assetStore) presignGet(ctx context.Context, objectKey string) (string, error) {
+	if a.publicHost != "" {
+		return presignGetURL(a.publicHost, a.accessKey, a.secretKey, a.region, objectKey, a.presignTTL, time.Now()), nil
+	}
 	presigned, err := a.presign.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: &a.bucket,
 		Key:    &objectKey,
 	}, s3.WithPresignExpires(a.presignTTL))
 	if err != nil {
-		return storedAsset{}, err
+		return "", err
 	}
-	return storedAsset{URL: presigned.URL, KeyB64: base64.StdEncoding.EncodeToString(key)}, nil
+	return presigned.URL, nil
 }
 
 // countAssets counts a user's stored objects (for the dashboard).

@@ -116,7 +116,7 @@ func stdioGenerate(fileStore *authStore) func(context.Context, generateImageArgs
 // the PNG under a one-time key, uploads the ciphertext, and returns a presigned
 // download URL plus the key. It never touches the local filesystem or a
 // caller-chosen path.
-func hostedGenerate(st *store, assets *assetStore) func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
+func hostedGenerate(st *store, assets *assetStore, publicURL string) func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 	return func(ctx context.Context, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 		u, ok := userFromContext(ctx)
 		if !ok {
@@ -143,17 +143,20 @@ func hostedGenerate(st *store, assets *assetStore) func(context.Context, generat
 		}
 
 		result := generateImageResult{
-			AssetURL: stored.URL, DecryptionKey: stored.KeyB64,
-			Model: img.Model, Account: img.Account, DurationMs: img.DurationMs, SizeBytes: len(img.PNG),
+			AssetURL:          stored.URL,
+			DecryptedAssetURL: decryptedAssetURL(publicURL, stored.URL, stored.KeyB64),
+			DecryptionKey:     stored.KeyB64,
+			Model:             img.Model,
+			Account:           img.Account,
+			DurationMs:        img.DurationMs,
+			SizeBytes:         len(img.PNG),
 		}
 		note := fmt.Sprintf(
-			"Encrypted PNG stored (%d bytes). To save it: download asset_url and decrypt with decryption_key "+
-				"(AES-256-GCM; the 12-byte nonce is the file's first bytes). The image is also shown inline below. "+
-				"The key is only returned here — it is not stored anywhere.", len(img.PNG))
-		callResult := &mcp.CallToolResult{Content: []mcp.Content{
-			&mcp.ImageContent{Data: img.PNG, MIMEType: "image/png"},
-			&mcp.TextContent{Text: note},
-		}}
+			"Encrypted PNG stored (%d bytes). Open decrypted_asset_url in a browser to view it "+
+				"(decrypted client-side; the key rides in the URL fragment and never reaches the server). "+
+				"To save the file, download asset_url (ciphertext) and AES-256-GCM decrypt with decryption_key "+
+				"(the 12-byte nonce is the first bytes). The key is returned only here and is never stored.", len(img.PNG))
+		callResult := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: note}}}
 		return callResult, result, nil
 	}
 }
@@ -181,12 +184,14 @@ func serveHTTP(addr string) {
 	assets := newAssetStore()
 	if assets == nil {
 		log.Print("warning: PINTR_S3_* not set — image storage disabled; generate_image will error until configured")
+	} else {
+		assets.ensureCORS(context.Background())
 	}
 
 	provider := newOAuthProvider(publicURL, st)
 	web := newWebHandlers(st, provider, assets, strings.HasPrefix(publicURL, "https://"))
 
-	hosted := hostedGenerate(st, assets)
+	hosted := hostedGenerate(st, assets, publicURL)
 
 	// Stateless: getServer runs per request, so the MCP server is always bound
 	// to the current request's authenticated user (no cross-user session reuse).
@@ -229,6 +234,7 @@ func serveHTTP(addr string) {
 	mux.HandleFunc("/keys/remove", web.handleKeyRemove)
 	mux.HandleFunc("/tokens/revoke", web.handleRevokeTokens)
 	mux.HandleFunc("/assets/purge", web.handleAssetsPurge)
+	mux.HandleFunc("/view", handleView)
 	mux.HandleFunc("/", web.handleIndex)
 
 	httpServer := &http.Server{

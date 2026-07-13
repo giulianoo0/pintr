@@ -22,8 +22,8 @@ const (
 	codexResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
 	// Advertise a current Codex version; newer image models (gpt-5.6-terra)
 	// 400 if the server thinks the client is too old.
-	codexVersion   = "0.144.3"
-	codexUserAgent = "codex_cli_rs/" + codexVersion
+	codexVersion      = "0.144.3"
+	codexUserAgent    = "codex_cli_rs/" + codexVersion
 	codexInstructions = "You are Codex. Follow the user request exactly."
 	defaultImageModel = "gpt-5.6-terra"
 )
@@ -42,13 +42,14 @@ type generateImageArgs struct {
 }
 
 type generateImageResult struct {
-	AssetURL      string `json:"asset_url,omitempty"`
-	DecryptionKey string `json:"decryption_key,omitempty"`
-	SavedPath     string `json:"saved_path,omitempty"`
-	Model         string `json:"model"`
-	Account       string `json:"account"`
-	DurationMs    int64  `json:"duration_ms"`
-	SizeBytes     int    `json:"size_bytes,omitempty"`
+	AssetURL          string `json:"asset_url,omitempty"`
+	DecryptedAssetURL string `json:"decrypted_asset_url,omitempty"`
+	DecryptionKey     string `json:"decryption_key,omitempty"`
+	SavedPath         string `json:"saved_path,omitempty"`
+	Model             string `json:"model"`
+	Account           string `json:"account"`
+	DurationMs        int64  `json:"duration_ms"`
+	SizeBytes         int    `json:"size_bytes,omitempty"`
 }
 
 // generatedImage is the raw result of a generation, before delivery. The caller
