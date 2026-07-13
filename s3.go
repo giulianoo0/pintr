@@ -7,7 +7,8 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
-	"log"
+	"errors"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -81,28 +82,10 @@ func hostOnly(base string) string {
 	return strings.TrimRight(base, "/")
 }
 
-// ensureCORS best-effort allows browsers to fetch the (encrypted) objects, so
-// the /view page can download and decrypt them client-side.
-func (a *assetStore) ensureCORS(ctx context.Context) {
-	_, err := a.client.PutBucketCors(ctx, &s3.PutBucketCorsInput{
-		Bucket: &a.bucket,
-		CORSConfiguration: &types.CORSConfiguration{
-			CORSRules: []types.CORSRule{{
-				AllowedMethods: []string{"GET"},
-				AllowedOrigins: []string{"*"},
-				AllowedHeaders: []string{"*"},
-				MaxAgeSeconds:  aws.Int32(3600),
-			}},
-		},
-	})
-	if err != nil {
-		log.Printf("warning: could not set bucket CORS (the /view page may fail to fetch): %v", err)
-	}
-}
-
 type storedAsset struct {
-	URL    string // presigned GET of the ciphertext
-	KeyB64 string // AES-256-GCM key, base64 (returned once, never stored)
+	URL       string // presigned GET of the ciphertext
+	ObjectKey string // storage key, e.g. assets/<userID>/<id>
+	KeyB64    string // AES-256-GCM key, base64 (returned once, never stored)
 }
 
 // putEncrypted encrypts png under a fresh key, uploads the ciphertext, and
@@ -147,7 +130,39 @@ func (a *assetStore) putEncrypted(ctx context.Context, userID string, png []byte
 	if err != nil {
 		return storedAsset{}, err
 	}
-	return storedAsset{URL: downloadURL, KeyB64: base64.StdEncoding.EncodeToString(key)}, nil
+	return storedAsset{URL: downloadURL, ObjectKey: objectKey, KeyB64: base64.StdEncoding.EncodeToString(key)}, nil
+}
+
+// fetchAndDecrypt downloads a stored object and decrypts it with the given key
+// (server-side, so callers only need to open a url). It never stores the key.
+func (a *assetStore) fetchAndDecrypt(ctx context.Context, objectKey, keyB64 string) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(keyB64)
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("invalid key")
+	}
+	out, err := a.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &a.bucket, Key: &objectKey})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Body.Close()
+	blob, err := io.ReadAll(io.LimitReader(out.Body, 64<<20)) // 64 MiB cap
+	if err != nil {
+		return nil, err
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	if len(blob) < gcm.NonceSize() {
+		return nil, errors.New("ciphertext too short")
+	}
+	nonce, ciphertext := blob[:gcm.NonceSize()], blob[gcm.NonceSize():]
+	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
 // presignGet returns a presigned download URL — on the public custom domain when

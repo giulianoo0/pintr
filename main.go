@@ -74,9 +74,11 @@ func newMCPServer(run func(context.Context, generateImageArgs) (*mcp.CallToolRes
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "generate_image",
 		Description: "Generate an image with the Codex image model (GPT Image, gpt-5.6-terra). " +
-			"Optionally pass reference_images to anchor characters or style. On the hosted server the PNG is " +
-			"encrypted, stored, and returned as a presigned download URL plus a one-time decryption key (asset_url + decryption_key); " +
-			"in local stdio mode it is written to output_path.",
+			"Optionally pass reference_images to anchor characters or style. " +
+			"On the hosted server the result includes decrypted_asset_url — open that URL to view the image; " +
+			"it returns the decrypted PNG (image/png) directly, so no decryption step is needed on your side. " +
+			"(asset_url is the raw encrypted ciphertext and decryption_key is its key, if you want to fetch/decrypt it yourself.) " +
+			"In local stdio mode the PNG is written to output_path instead.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 		return run(ctx, args)
 	})
@@ -144,18 +146,18 @@ func hostedGenerate(st *store, assets *assetStore, publicURL string) func(contex
 
 		result := generateImageResult{
 			AssetURL:          stored.URL,
-			DecryptedAssetURL: decryptedAssetURL(publicURL, stored.URL, stored.KeyB64),
+			DecryptedAssetURL: decryptedAssetURL(publicURL, stored.ObjectKey, stored.KeyB64),
 			DecryptionKey:     stored.KeyB64,
+			MimeType:          "image/png",
 			Model:             img.Model,
 			Account:           img.Account,
 			DurationMs:        img.DurationMs,
 			SizeBytes:         len(img.PNG),
 		}
 		note := fmt.Sprintf(
-			"Encrypted PNG stored (%d bytes). Open decrypted_asset_url in a browser to view it "+
-				"(decrypted client-side; the key rides in the URL fragment and never reaches the server). "+
-				"To save the file, download asset_url (ciphertext) and AES-256-GCM decrypt with decryption_key "+
-				"(the 12-byte nonce is the first bytes). The key is returned only here and is never stored.", len(img.PNG))
+			"Image generated (%d bytes). To view it, open decrypted_asset_url — it returns the decrypted "+
+				"PNG directly (image/png), decrypted server-side. asset_url is the raw encrypted ciphertext; "+
+				"decryption_key is the AES-256-GCM key, returned only here and never stored.", len(img.PNG))
 		callResult := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: note}}}
 		return callResult, result, nil
 	}
@@ -184,8 +186,6 @@ func serveHTTP(addr string) {
 	assets := newAssetStore()
 	if assets == nil {
 		log.Print("warning: PINTR_S3_* not set — image storage disabled; generate_image will error until configured")
-	} else {
-		assets.ensureCORS(context.Background())
 	}
 
 	provider := newOAuthProvider(publicURL, st)
@@ -234,7 +234,7 @@ func serveHTTP(addr string) {
 	mux.HandleFunc("/keys/remove", web.handleKeyRemove)
 	mux.HandleFunc("/tokens/revoke", web.handleRevokeTokens)
 	mux.HandleFunc("/assets/purge", web.handleAssetsPurge)
-	mux.HandleFunc("/view", handleView)
+	mux.HandleFunc("/view", web.handleView)
 	mux.HandleFunc("/", web.handleIndex)
 
 	httpServer := &http.Server{

@@ -45,6 +45,7 @@ type generateImageResult struct {
 	AssetURL          string `json:"asset_url,omitempty"`
 	DecryptedAssetURL string `json:"decrypted_asset_url,omitempty"`
 	DecryptionKey     string `json:"decryption_key,omitempty"`
+	MimeType          string `json:"mime_type,omitempty"`
 	SavedPath         string `json:"saved_path,omitempty"`
 	Model             string `json:"model"`
 	Account           string `json:"account"`
