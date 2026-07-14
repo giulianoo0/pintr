@@ -106,15 +106,19 @@ var pageCSP = func() string {
 		return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 	}
 	scriptSrc := hash(siteScript)
-	connectSrc := ""
+	// connect-src needs 'self' even though our script never fetches: tools
+	// that probe the site from page context (e.g. Lighthouse downloading
+	// /robots.txt via fetch) are blocked by default-src 'none' otherwise.
+	connectSrc := "connect-src 'self'"
 	frameSrc := ""
 	if plausibleScriptURL != "" {
 		if u, err := url.Parse(plausibleScriptURL); err == nil && u.Scheme == "https" {
 			origin := u.Scheme + "://" + u.Host
 			scriptSrc += " " + origin + " " + hash(plausibleInit)
-			connectSrc = "connect-src " + origin + "; "
+			connectSrc += " " + origin
 		}
 	}
+	connectSrc += "; "
 	if turnstile.SiteKey() != "" {
 		scriptSrc += " https://challenges.cloudflare.com"
 		frameSrc = "frame-src https://challenges.cloudflare.com; "
