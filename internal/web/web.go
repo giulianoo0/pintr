@@ -5,6 +5,7 @@ package web
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/giulianoo0/pintr/internal/analytics"
@@ -27,6 +28,9 @@ type Handlers struct {
 }
 
 func New(st *store.Store, provider *oauth.Provider, assetStore *assets.Store, tracker *analytics.Tracker, verifier *turnstile.Verifier, secureCookies bool) *Handlers {
+	// Social embeds (Open Graph/Twitter) need absolute URLs; derive the public
+	// base once for the absURL template func.
+	publicBase = strings.TrimSuffix(provider.ResourceURL(), "/mcp")
 	return &Handlers{
 		store:         st,
 		provider:      provider,
@@ -58,6 +62,9 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/upload", h.handleUpload)
 	mux.HandleFunc("/view", h.handleView)
 	mux.HandleFunc("/llms.txt", handleLLMs)
+	mux.Handle("/static/", staticHandler())
+	mux.HandleFunc("/favicon.ico", handleFavicon)
+	mux.HandleFunc("/robots.txt", handleRobots)
 	mux.HandleFunc("/", h.handleIndex)
 }
 

@@ -34,6 +34,10 @@ var plausibleScriptURL = strings.TrimSpace(os.Getenv("PINTR_PLAUSIBLE_SCRIPT"))
 
 const plausibleInit = `window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()`
 
+// publicBase is the absolute https base for social-embed URLs; set once in
+// New before any page renders.
+var publicBase string
+
 var pageTemplates = template.Must(template.New("").Funcs(template.FuncMap{
 	"styles":           func() template.CSS { return template.CSS(stylesCSS) },
 	"script":           func() template.JS { return siteScript },
@@ -41,6 +45,7 @@ var pageTemplates = template.Must(template.New("").Funcs(template.FuncMap{
 	"plausibleScript":  func() template.URL { return template.URL(plausibleScriptURL) },
 	"plausibleInit":    func() template.JS { return plausibleInit },
 	"turnstileSiteKey": turnstile.SiteKey,
+	"absURL":           func(path string) string { return publicBase + path },
 }).ParseFS(templateFS, "templates/*.tmpl"))
 
 // siteScript is the one script every page carries: confirmation prompts for
@@ -57,11 +62,12 @@ const siteScript = `(function(){
     if(msg&&!confirm(msg))e.preventDefault();
   });
   var btn=document.querySelector('.menu-btn'),menu=document.getElementById('site-menu');
-  function closeMenu(){document.body.classList.remove('menu-open');}
+  function closeMenu(){document.body.classList.remove('menu-open');if(btn)btn.setAttribute('aria-expanded','false');}
   if(btn&&menu){
     btn.addEventListener('click',function(e){
       e.stopPropagation();
-      document.body.classList.toggle('menu-open');
+      var open=document.body.classList.toggle('menu-open');
+      btn.setAttribute('aria-expanded',open?'true':'false');
     });
     document.addEventListener('click',function(e){
       if(document.body.classList.contains('menu-open')&&!menu.contains(e.target))closeMenu();
@@ -114,7 +120,7 @@ var pageCSP = func() string {
 		frameSrc = "frame-src https://challenges.cloudflare.com; "
 	}
 	return "default-src 'none'; script-src " + scriptSrc + "; " +
-		"style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
+		"style-src 'unsafe-inline'; font-src 'self'; " +
 		"img-src 'self' data:; " + connectSrc + frameSrc + "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 }()
 
