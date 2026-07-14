@@ -21,7 +21,9 @@ type dashboardPage struct {
 	OAuthSessions    []oauthSessionRow
 	AssetsConfigured bool
 	AssetCountKnown  bool
-	AssetCount       int
+	AssetCount       int // generated images stored
+	UploadCountKnown bool
+	UploadCount      int // reference uploads stored
 	Script           template.JS
 }
 
@@ -122,6 +124,12 @@ func (h *webHandlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		} else {
 			page.AssetCountKnown = true
 			page.AssetCount = count
+		}
+		if count, err := h.assets.countUploads(r.Context(), session.User.ID); err != nil {
+			log.Printf("dashboard: count uploads: %v", err)
+		} else {
+			page.UploadCountKnown = true
+			page.UploadCount = count
 		}
 	}
 

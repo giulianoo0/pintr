@@ -182,11 +182,21 @@ func (a *assetStore) presignGet(ctx context.Context, objectKey string) (string, 
 	return presigned.URL, nil
 }
 
-// uploadTTL is how long an uploaded reference image is kept before the janitor
-// deletes it. Uploads used to be one-shot (deleted on first fetch, before the
-// generation even ran), which broke agent retries after a client timeout and
-// multi-image runs that reuse the same reference handle.
-const uploadTTL = time.Hour
+// Retention: the janitor permanently deletes objects from the bucket once they
+// expire — nothing is kept after these windows.
+//
+// uploadTTL is how long an uploaded reference image is kept. Uploads used to be
+// one-shot (deleted on first fetch, before the generation even ran), which
+// broke agent retries after a client timeout and multi-image runs that reuse
+// the same reference handle.
+//
+// assetTTL is how long a generated image is kept. It matches presignTTL: once
+// the presigned download URL dies, the ciphertext has no reachable consumer, so
+// keeping it would only accumulate undeletable-by-anyone data.
+const (
+	uploadTTL = time.Hour
+	assetTTL  = 24 * time.Hour
+)
 
 // putUploadEncrypted encrypts an uploaded reference image under a fresh key,
 // stores only the ciphertext, and returns a short opaque handle that carries
@@ -268,17 +278,27 @@ func (a *assetStore) fetchUpload(ctx context.Context, userID, handle string) ([]
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
-// startUploadJanitor sweeps expired reference uploads in the background so a
-// forgotten handle doesn't keep ciphertext around forever.
-func (a *assetStore) startUploadJanitor(ctx context.Context) {
+// startJanitor sweeps expired objects in the background: reference uploads
+// after uploadTTL, generated images after assetTTL. Expiry is a real
+// DeleteObjects against the bucket — the ciphertext is gone from R2, not just
+// unreachable.
+func (a *assetStore) startJanitor(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for {
-			if n, err := a.sweepExpiredUploads(ctx); err != nil {
-				log.Printf("upload janitor: %v", err)
-			} else if n > 0 {
-				log.Printf("upload janitor: deleted %d expired upload(s)", n)
+			for _, sweep := range []struct {
+				prefix string
+				ttl    time.Duration
+			}{
+				{"uploads/", uploadTTL},
+				{"assets/", assetTTL},
+			} {
+				if n, err := a.sweepExpired(ctx, sweep.prefix, sweep.ttl); err != nil {
+					log.Printf("janitor %s: %v", sweep.prefix, err)
+				} else if n > 0 {
+					log.Printf("janitor: deleted %d expired object(s) under %s", n, sweep.prefix)
+				}
 			}
 			select {
 			case <-ctx.Done():
@@ -289,11 +309,10 @@ func (a *assetStore) startUploadJanitor(ctx context.Context) {
 	}()
 }
 
-// sweepExpiredUploads deletes every reference upload older than uploadTTL,
-// across all users, and returns how many it removed.
-func (a *assetStore) sweepExpiredUploads(ctx context.Context) (int, error) {
-	cutoff := time.Now().Add(-uploadTTL)
-	prefix := "uploads/"
+// sweepExpired deletes every object under prefix older than ttl, across all
+// users, and returns how many it removed.
+func (a *assetStore) sweepExpired(ctx context.Context, prefix string, ttl time.Duration) (int, error) {
+	cutoff := time.Now().Add(-ttl)
 	deleted := 0
 	paginator := s3.NewListObjectsV2Paginator(a.client, &s3.ListObjectsV2Input{Bucket: &a.bucket, Prefix: &prefix})
 	for paginator.HasMorePages() {
@@ -321,9 +340,8 @@ func (a *assetStore) sweepExpiredUploads(ctx context.Context) (int, error) {
 	return deleted, nil
 }
 
-// countAssets counts a user's stored objects (for the dashboard).
-func (a *assetStore) countAssets(ctx context.Context, userID string) (int, error) {
-	prefix := "assets/" + userID + "/"
+// countPrefix counts a user's stored objects under one prefix (dashboard).
+func (a *assetStore) countPrefix(ctx context.Context, prefix string) (int, error) {
 	count := 0
 	paginator := s3.NewListObjectsV2Paginator(a.client, &s3.ListObjectsV2Input{Bucket: &a.bucket, Prefix: &prefix})
 	for paginator.HasMorePages() {
@@ -336,18 +354,31 @@ func (a *assetStore) countAssets(ctx context.Context, userID string) (int, error
 	return count, nil
 }
 
-// deleteAll removes every object owned by the user — both generated images and
-// any lingering uploads.
+func (a *assetStore) countAssets(ctx context.Context, userID string) (int, error) {
+	return a.countPrefix(ctx, "assets/"+userID+"/")
+}
+
+func (a *assetStore) countUploads(ctx context.Context, userID string) (int, error) {
+	return a.countPrefix(ctx, "uploads/"+userID+"/")
+}
+
+// deleteAssets removes a user's generated images; deleteUploads their
+// reference uploads; deleteAll both.
+func (a *assetStore) deleteAssets(ctx context.Context, userID string) (int, error) {
+	return a.deletePrefix(ctx, "assets/"+userID+"/")
+}
+
+func (a *assetStore) deleteUploads(ctx context.Context, userID string) (int, error) {
+	return a.deletePrefix(ctx, "uploads/"+userID+"/")
+}
+
 func (a *assetStore) deleteAll(ctx context.Context, userID string) (int, error) {
-	deleted := 0
-	for _, prefix := range []string{"assets/" + userID + "/", "uploads/" + userID + "/"} {
-		n, err := a.deletePrefix(ctx, prefix)
-		deleted += n
-		if err != nil {
-			return deleted, err
-		}
+	deleted, err := a.deleteAssets(ctx, userID)
+	if err != nil {
+		return deleted, err
 	}
-	return deleted, nil
+	n, err := a.deleteUploads(ctx, userID)
+	return deleted + n, err
 }
 
 func (a *assetStore) deletePrefix(ctx context.Context, prefix string) (int, error) {

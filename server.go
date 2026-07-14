@@ -37,7 +37,7 @@ func serveHTTP(addr string) {
 	if assets == nil {
 		log.Print("warning: PINTR_S3_* not set — image storage disabled; generate_image will error until configured")
 	} else {
-		assets.startUploadJanitor(context.Background())
+		assets.startJanitor(context.Background())
 	}
 
 	provider := newOAuthProvider(publicURL, st)

@@ -260,7 +260,8 @@ func hostedGenerate(st *store, assets *assetStore, publicURL string) generateHan
 		note := fmt.Sprintf(
 			"Image generated (%d bytes). To view it, open decrypted_asset_url — it returns the decrypted "+
 				"PNG directly (image/png), decrypted server-side. asset_url is the raw encrypted ciphertext; "+
-				"decryption_key is the AES-256-GCM key, returned only here and never stored.", len(img.PNG))
+				"decryption_key is the AES-256-GCM key, returned only here and never stored. The stored image "+
+				"auto-deletes in 24 hours — download the PNG now if you need it longer.", len(img.PNG))
 		callResult := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: note}}}
 		return callResult, result, nil
 	}

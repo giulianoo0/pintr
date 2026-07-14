@@ -44,11 +44,15 @@
 </section>
 <section class="tabpane" id="p-data">
 <p class="whoami">signed in as <span class="email" title="hover to reveal">{{.Email}}</span></p>
-<h2>generated assets</h2>
+<h2>stored data</h2>
 {{if not .AssetsConfigured}}<p>asset storage is not configured on this server.</p>
-{{else}}{{if .AssetCountKnown}}<p>{{.AssetCount}} encrypted image(s) stored. decryption keys are only returned at generation time and never saved here, so images can't be viewed from this page.</p>
-{{else}}<p>your generated images are stored encrypted. decryption keys are only returned at generation time and never saved here, so images can't be viewed from this page.</p>{{end}}
-<form method="post" action="/assets/purge" data-confirm="permanently delete ALL your stored images? this cannot be undone.">{{template "csrf" .CSRF}}<button type="submit" class="link danger">delete all assets</button></form>
+{{else}}<p class="muted">everything is stored encrypted; decryption keys are only returned at generation/upload time and never saved here, so nothing can be viewed from this page. expired objects are permanently deleted from storage.</p>
+<div class="stored">
+<div class="stored-row"><span>{{if .AssetCountKnown}}<b>{{.AssetCount}}</b> generated image(s){{else}}generated images: count unavailable{{end}} <span class="muted">· auto-delete 24h after generation</span></span>
+<form method="post" action="/assets/purge" data-confirm="permanently delete ALL your generated images? this cannot be undone.">{{template "csrf" .CSRF}}<input type="hidden" name="kind" value="generated"><button type="submit" class="link danger">delete all generated images</button></form></div>
+<div class="stored-row"><span>{{if .UploadCountKnown}}<b>{{.UploadCount}}</b> reference upload(s){{else}}reference uploads: count unavailable{{end}} <span class="muted">· auto-delete 1h after upload</span></span>
+<form method="post" action="/assets/purge" data-confirm="permanently delete ALL your reference uploads? this cannot be undone.">{{template "csrf" .CSRF}}<input type="hidden" name="kind" value="uploads"><button type="submit" class="link danger">delete all reference uploads</button></form></div>
+</div>
 {{end}}
 <h2 class="danger">danger zone</h2>
 <p>delete your account and <b>everything</b> tied to it — linked chatgpt accounts, access keys, sessions, and all stored images. permanent, cannot be undone.</p>

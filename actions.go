@@ -80,18 +80,33 @@ func (h *webHandlers) handleUsageRefresh(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// handleAssetsPurge deletes all of the user's stored (encrypted) images.
+// handleAssetsPurge deletes the user's stored (encrypted) objects. The form's
+// "kind" field picks what: generated images, reference uploads, or (default)
+// both.
 func (h *webHandlers) handleAssetsPurge(w http.ResponseWriter, r *http.Request) {
 	h.mutate(w, r, func(session sessionInfo) error {
 		if h.assets == nil {
 			return nil
 		}
-		deleted, err := h.assets.deleteAll(r.Context(), session.User.ID)
+		kind := r.FormValue("kind")
+		var (
+			deleted int
+			err     error
+		)
+		switch kind {
+		case "generated":
+			deleted, err = h.assets.deleteAssets(r.Context(), session.User.ID)
+		case "uploads":
+			deleted, err = h.assets.deleteUploads(r.Context(), session.User.ID)
+		default:
+			kind = "all"
+			deleted, err = h.assets.deleteAll(r.Context(), session.User.ID)
+		}
 		if err != nil {
-			log.Printf("purge assets for %s: %v", session.User.ID, err)
+			log.Printf("purge %s for %s: %v", kind, session.User.ID, err)
 			return err
 		}
-		log.Printf("purged %d assets for %s", deleted, session.User.ID)
+		log.Printf("purged %d object(s) (%s) for %s", deleted, kind, session.User.ID)
 		return nil
 	})
 }

@@ -61,3 +61,6 @@ code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-
 .bar>span.ok{background:#4ade80}
 .bar>span.warn{background:#fbbf24}
 .bar>span.low{background:#f87171}
+.stored{display:flex;flex-direction:column;gap:.9rem;margin:.6rem 0}
+.stored-row{display:flex;flex-direction:column;gap:.15rem;align-items:flex-start}
+.stored-row form{margin:0}
