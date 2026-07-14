@@ -1,6 +1,6 @@
 *{box-sizing:border-box}
 body{background:#0f0f10;color:#e7e7e7;font-family:'Geist',system-ui,-apple-system,sans-serif;margin:0;line-height:1.55;display:flex;flex-direction:column;min-height:100vh;min-height:100svh}
-header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+header{position:relative;width:100%;max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem}
 .logo{display:inline-flex;align-items:center;gap:.5rem;text-decoration:none;color:#fff;font-weight:700;font-size:1.15rem;letter-spacing:-.01em}
 .logo svg{display:block}
 .nav{display:flex;align-items:center;gap:1.1rem;font-size:.9rem}
@@ -11,7 +11,7 @@ main{width:100%;max-width:64rem;margin:0 auto;padding:1.4rem 1.5rem 3rem;flex:1 
 .hero{margin:1.5rem 0 .5rem}
 .hero-title{font-size:2rem;font-weight:750;letter-spacing:-.02em;margin:0 0 .6rem;line-height:1.15}
 input.dtab{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
-.tabs{position:relative;display:flex;width:22rem;max-width:100%;background:#141416;border:1px solid #262626;border-radius:9px;padding:3px}
+.tabs{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;width:22rem;max-width:100%;background:#141416;border:1px solid #262626;border-radius:9px;padding:3px}
 .tabs .slider{position:absolute;top:3px;left:3px;bottom:3px;width:calc((100% - 6px)/4);background:#2b6cb0;border-radius:6px;transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:0}
 .tabs label{position:relative;z-index:1;flex:1;text-align:center;padding:.34rem .8rem;font-size:.85rem;color:#c9c9c9;cursor:pointer;white-space:nowrap;border-radius:6px}
 .tabs label:hover{color:#fff}
