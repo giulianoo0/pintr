@@ -5,11 +5,8 @@ contributions are welcome — issues, fixes, and features.
 ## llm-generated contributions
 
 using an llm (claude, codex, whatever) to write a change is fine and encouraged.
-there is no penalty and no need to hide it.
-
-but there is one rule: **everything is human-reviewed before it merges.** an llm
-can write the code; a person reads it, understands it, and takes responsibility
-for it. so:
+there is no penalty and no need to hide it, but everything will be manually
+reviewed later.
 
 - open a pr and describe what the change does and why, in your own words. if you
   can't explain it, it isn't ready.
@@ -21,8 +18,8 @@ for it. so:
 
 this is a project that handles other people's login credentials and encryption
 keys, so security-sensitive changes (auth, oauth, token storage, the crypto in
-`store.go` / `s3.go`) get extra scrutiny. explain the threat model you had in
-mind.
+`internal/store` / `internal/assets`) get extra scrutiny. explain the threat
+model you had in mind.
 
 ## style
 
