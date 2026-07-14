@@ -8,3 +8,6 @@ auth.json
 *.db
 *.db-wal
 *.db-shm
+
+# server/local secrets
+.env
