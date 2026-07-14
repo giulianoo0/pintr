@@ -1,7 +1,6 @@
 package web
 
 import (
-	"html/template"
 	"log"
 	"math"
 	"net/http"
@@ -27,7 +26,6 @@ type dashboardPage struct {
 	AssetCount       int // generated images stored
 	UploadCountKnown bool
 	UploadCount      int // reference uploads stored
-	Script           template.JS
 }
 
 type dashAccount struct {
@@ -114,7 +112,6 @@ func (h *Handlers) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Email:         session.User.Email,
 		Keys:          keys,
 		OAuthSessions: oauthSessions,
-		Script:        dashScript,
 	}
 
 	for _, a := range accounts {

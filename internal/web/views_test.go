@@ -19,7 +19,6 @@ func TestDashboardTemplateWithAssets(t *testing.T) {
 		AssetCount:       3,
 		UploadCountKnown: true,
 		UploadCount:      2,
-		Script:           dashScript,
 	}
 	var buf bytes.Buffer
 	if err := pageTemplates.ExecuteTemplate(&buf, "dashboard", page); err != nil {

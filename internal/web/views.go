@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/giulianoo0/pintr/internal/store"
+	"github.com/giulianoo0/pintr/internal/turnstile"
 )
 
 // All HTML lives in templates/ and is rendered with html/template, so every
@@ -34,23 +35,42 @@ var plausibleScriptURL = strings.TrimSpace(os.Getenv("PINTR_PLAUSIBLE_SCRIPT"))
 const plausibleInit = `window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()`
 
 var pageTemplates = template.Must(template.New("").Funcs(template.FuncMap{
-	"styles":          func() template.CSS { return template.CSS(stylesCSS) },
-	"shortDate":       shortDate,
-	"plausibleScript": func() template.URL { return template.URL(plausibleScriptURL) },
-	"plausibleInit":   func() template.JS { return plausibleInit },
+	"styles":           func() template.CSS { return template.CSS(stylesCSS) },
+	"script":           func() template.JS { return siteScript },
+	"shortDate":        shortDate,
+	"plausibleScript":  func() template.URL { return template.URL(plausibleScriptURL) },
+	"plausibleInit":    func() template.JS { return plausibleInit },
+	"turnstileSiteKey": turnstile.SiteKey,
 }).ParseFS(templateFS, "templates/*.tmpl"))
 
-// dashScript is the dashboard's only JavaScript: confirmation prompts for
-// destructive forms (declared via data-confirm) and the live "updated Xm ago ·
-// next refresh in Ym Zs" ticker on each ".fresh" element. The ticker counts
-// from server-provided data-age/data-left deltas plus client-side elapsed
-// time, so it isn't affected by clock skew. It is injected as a typed
-// template.JS constant so its CSP hash can be computed from the same value.
-const dashScript = `(function(){
+// siteScript is the one script every page carries: confirmation prompts for
+// destructive forms (declared via data-confirm), the sliding mobile menu
+// (open on the header button, close on outside click / Escape / choosing an
+// item), and the live "updated Xm ago · next refresh in Ym Zs" ticker on each
+// ".fresh" element. The ticker counts from server-provided data-age/data-left
+// deltas plus client-side elapsed time, so it isn't affected by clock skew.
+// It is injected as a typed template.JS constant so its CSP hash can be
+// computed from the same value.
+const siteScript = `(function(){
   document.addEventListener('submit',function(e){
     var msg=e.target.getAttribute('data-confirm');
     if(msg&&!confirm(msg))e.preventDefault();
   });
+  var btn=document.querySelector('.menu-btn'),menu=document.getElementById('site-menu');
+  function closeMenu(){document.body.classList.remove('menu-open');}
+  if(btn&&menu){
+    btn.addEventListener('click',function(e){
+      e.stopPropagation();
+      document.body.classList.toggle('menu-open');
+    });
+    document.addEventListener('click',function(e){
+      if(document.body.classList.contains('menu-open')&&!menu.contains(e.target))closeMenu();
+    });
+    document.addEventListener('keydown',function(e){if(e.key==='Escape')closeMenu();});
+    menu.addEventListener('click',function(e){
+      if(e.target.closest('label,a,button'))closeMenu();
+    });
+  }
   var start=Date.now();
   function fmt(age,left){
     var am=Math.floor(age/60);
@@ -70,17 +90,18 @@ const dashScript = `(function(){
 })();`
 
 // pageCSP locks pages down to what they actually use: inline styles + Google
-// Fonts, and only known scripts — the dashboard script and (when configured)
-// the Plausible script + its init stub. Inline scripts are allowed by hash
-// only, so inline handlers are blocked; forms use data-confirm instead of
-// onsubmit.
+// Fonts, and only known scripts — the site script and, when configured, the
+// Plausible script + its init stub and the Cloudflare Turnstile widget.
+// Inline scripts are allowed by hash only, so inline handlers are blocked;
+// forms use data-confirm instead of onsubmit.
 var pageCSP = func() string {
 	hash := func(s string) string {
 		sum := sha256.Sum256([]byte(s))
 		return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 	}
-	scriptSrc := hash(dashScript)
+	scriptSrc := hash(siteScript)
 	connectSrc := ""
+	frameSrc := ""
 	if plausibleScriptURL != "" {
 		if u, err := url.Parse(plausibleScriptURL); err == nil && u.Scheme == "https" {
 			origin := u.Scheme + "://" + u.Host
@@ -88,9 +109,13 @@ var pageCSP = func() string {
 			connectSrc = "connect-src " + origin + "; "
 		}
 	}
+	if turnstile.SiteKey() != "" {
+		scriptSrc += " https://challenges.cloudflare.com"
+		frameSrc = "frame-src https://challenges.cloudflare.com; "
+	}
 	return "default-src 'none'; script-src " + scriptSrc + "; " +
 		"style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
-		"img-src 'self' data:; " + connectSrc + "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+		"img-src 'self' data:; " + connectSrc + frameSrc + "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 }()
 
 func securePageHeaders(w http.ResponseWriter) {

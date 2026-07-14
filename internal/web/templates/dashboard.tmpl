@@ -1,6 +1,6 @@
 {{/* The tabbed dashboard. Radios come first, then the header (sliding tabs +
-     logout), then the panes in <main> — the CSS-only tabs
-     (#radio:checked ~ header/main …) need both after the radios. */}}
+     logout), the mobile menu, then the panes in <main> — the CSS-only tabs
+     (#radio:checked ~ …) need everything after the radios. */}}
 
 {{define "usage"}}<div class="limits">{{if .}}{{range .}}<div class="lim"><span class="lim-k">{{.Label}}</span><span class="bar"><span class="{{.Class}}" style="width:{{.Pct}}%"></span></span><span class="lim-v">{{.Pct}}% left</span></div>{{end}}{{else}}no rate-limit data{{end}}</div>{{end}}
 
@@ -11,7 +11,8 @@
 <input class="dtab" type="radio" name="dtab" id="t-data">
 <header>{{template "logo"}}
 <nav class="tabs"><span class="slider"></span><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label></nav>
-<form method="post" action="/logout" class="logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form></header>
+<form method="post" action="/logout" class="logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form>{{template "menubtn"}}</header>
+<div class="menu" id="site-menu"><nav class="menu-items"><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label><a href="/llms.txt">llms.txt</a><form method="post" action="/logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form></nav></div>
 <main>
 <section class="tabpane" id="p-accounts">
 {{if not .Accounts}}<p class="err">no chatgpt account linked yet. image generation will fail until you add one.</p>{{end}}
@@ -25,22 +26,100 @@
 </section>
 <section class="tabpane" id="p-keys">
 <p class="muted">access keys authenticate scripts/clients with <code>Authorization: Bearer &lt;key&gt;</code>. mcp clients that logged in through the browser oauth flow show up as "oauth" sessions — revoke any of them here.</p>
-{{if or .Keys .OAuthSessions}}<table><tr><th>key</th><th>name</th><th>created</th><th></th></tr>
+{{if or .Keys .OAuthSessions}}<div class="table-wrap"><table><tr><th>key</th><th>name</th><th>created</th><th></th></tr>
 {{range .Keys}}<tr><td><code>{{.Prefix}}…</code></td><td>{{.Name}}</td><td>{{shortDate .CreatedAt}}</td><td><form method="post" action="/keys/remove" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger">revoke</button></form></td></tr>
 {{end}}{{range .OAuthSessions}}<tr><td><span class="muted">oauth session</span></td><td>oauth</td><td>{{shortDate .CreatedAt}}</td><td><form method="post" action="/sessions/remove" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger">revoke</button></form></td></tr>
-{{end}}</table>{{end}}
+{{end}}</table></div>{{end}}
 <form method="post" action="/keys/create">{{template "csrf" .CSRF}}<input type="text" name="name" placeholder="key name (optional)"><button type="submit">new access key</button></form>
 <p><form method="post" action="/tokens/revoke" data-confirm="sign out all mcp clients? they will have to authorize again.">{{template "csrf" .CSRF}}<button type="submit" class="link danger">revoke all mcp tokens</button></form></p>
 </section>
 <section class="tabpane" id="p-connect">
-<p>add pintr to your mcp client by url. on first connect your browser opens; you log in to pintr and click allow, and the client keeps its own token (auto-refreshed).</p>
-<h3>Claude Code</h3>
-<p><code>claude mcp add --transport http pintr {{.Resource}}</code></p>
-<h3>OpenCode, PI, and other mcp clients</h3>
-<p>add a remote (http) mcp server pointing at <code>{{.Resource}}</code>.</p>
-<h2>use an access key instead (no oauth)</h2>
-<p>create a key in the access keys tab and pass it as a header (works in any client):</p>
-<p><code>claude mcp add --transport http pintr {{.Resource}} --header "Authorization: Bearer pintr_YOURKEY"</code></p>
+<p>add pintr to your mcp client by url: <code>{{.Resource}}</code>. on first connect your browser opens; you log in to pintr and click allow, and the client keeps its own token (auto-refreshed). prefer a static key? create one in the keys tab and pass it as an <code>Authorization: Bearer pintr_YOURKEY</code> header.</p>
+<input class="dtab" type="radio" name="ctab" id="c-claude" checked>
+<input class="dtab" type="radio" name="ctab" id="c-desktop">
+<input class="dtab" type="radio" name="ctab" id="c-opencode">
+<input class="dtab" type="radio" name="ctab" id="c-pi">
+<input class="dtab" type="radio" name="ctab" id="c-codex">
+<input class="dtab" type="radio" name="ctab" id="c-antigravity">
+<input class="dtab" type="radio" name="ctab" id="c-grok">
+<input class="dtab" type="radio" name="ctab" id="c-other">
+<div class="htabs-wrap"><nav class="htabs"><span class="hslider"></span><label for="c-claude">Claude Code</label><label for="c-desktop">Claude Desktop</label><label for="c-opencode">OpenCode</label><label for="c-pi">PI</label><label for="c-codex">Codex</label><label for="c-antigravity">Antigravity</label><label for="c-grok">Grok Build</label><label for="c-other">other</label></nav></div>
+<div class="hpane" id="hp-claude">
+<pre><code>claude mcp add --transport http pintr {{.Resource}}</code></pre>
+<p class="muted">with an access key instead of oauth: append <code>--header "Authorization: Bearer pintr_YOURKEY"</code></p>
+</div>
+<div class="hpane" id="hp-desktop">
+<p>settings → connectors → <b>add custom connector</b> → paste <code>{{.Resource}}</code>. or via the mcp-remote bridge in <code>claude_desktop_config.json</code>:</p>
+<pre><code>{
+  "mcpServers": {
+    "pintr": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "{{.Resource}}"]
+    }
+  }
+}</code></pre>
+</div>
+<div class="hpane" id="hp-opencode">
+<p><code>opencode mcp add</code> (interactive), or in <code>opencode.json</code>:</p>
+<pre><code>{
+  "mcp": {
+    "pintr": {
+      "type": "remote",
+      "url": "{{.Resource}}",
+      "enabled": true
+    }
+  }
+}</code></pre>
+<p class="muted">access key instead of oauth: add <code>"headers": {"Authorization": "Bearer pintr_YOURKEY"}</code></p>
+</div>
+<div class="hpane" id="hp-pi">
+<p>in the mcp config (<code>.mcp.json</code> / pi settings):</p>
+<pre><code>{
+  "mcp": {
+    "pintr": {
+      "type": "remote",
+      "url": "{{.Resource}}"
+    }
+  }
+}</code></pre>
+<p class="muted">access key instead of oauth: add <code>"headers": {"Authorization": "Bearer pintr_YOURKEY"}</code></p>
+</div>
+<div class="hpane" id="hp-codex">
+<pre><code>codex mcp add pintr --url {{.Resource}}</code></pre>
+<p>or in <code>~/.codex/config.toml</code>:</p>
+<pre><code>[mcp_servers.pintr]
+url = "{{.Resource}}"
+# optional access key instead of oauth:
+# bearer_token_env_var = "PINTR_KEY"</code></pre>
+</div>
+<div class="hpane" id="hp-antigravity">
+<p>shared cli + ide config at <code>~/.gemini/config/mcp_config.json</code> (note <code>serverUrl</code>, not <code>url</code>):</p>
+<pre><code>{
+  "mcpServers": {
+    "pintr": {
+      "serverUrl": "{{.Resource}}"
+    }
+  }
+}</code></pre>
+<p class="muted">access key instead of oauth: add <code>"headers": {"Authorization": "Bearer pintr_YOURKEY"}</code></p>
+</div>
+<div class="hpane" id="hp-grok">
+<p>grok build reads claude-style mcp config (<code>.mcp.json</code> in the project):</p>
+<pre><code>{
+  "mcpServers": {
+    "pintr": {
+      "type": "http",
+      "url": "{{.Resource}}"
+    }
+  }
+}</code></pre>
+<p class="muted">for grok.com chat: grok.com/connectors → new connector → custom → paste the url.</p>
+</div>
+<div class="hpane" id="hp-other">
+<p>any mcp client with remote (streamable http) support works: add a remote mcp server pointing at <code>{{.Resource}}</code>. if the client can't run the browser oauth flow, pass an access key header (works everywhere, including curl):</p>
+<pre><code>Authorization: Bearer pintr_YOURKEY</code></pre>
+<p class="muted">full endpoint + tool reference for agents: <a href="/llms.txt">/llms.txt</a></p>
+</div>
 </section>
 <section class="tabpane" id="p-data">
 <p class="whoami">signed in as <span class="email" title="hover to reveal">{{.Email}}</span></p>
@@ -59,5 +138,6 @@
 <form method="post" action="/account/delete" data-confirm="Delete your account and ALL data permanently? This cannot be undone.">{{template "csrf" .CSRF}}<button type="submit" class="danger-btn">delete my account</button></form>
 </section>
 </main>
-<script>{{.Script}}</script>
+{{template "footer"}}
+<script>{{script}}</script>
 </body></html>{{end}}

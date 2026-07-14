@@ -1,5 +1,6 @@
 {{/* Shared building blocks. Every page template starts with "head"; simple
-     pages use "pagetop"/"pagebottom" which add the standard header + <main>. */}}
+     pages use "pagetop"/"pagebottom" which add the standard header, the
+     mobile slide-down menu, <main>, and the footer + site script. */}}
 
 {{define "head" -}}
 <!doctype html>
@@ -9,6 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
 {{if plausibleScript}}<script async src="{{plausibleScript}}"></script>
 <script>{{plausibleInit}}</script>
+{{end}}{{if turnstileSiteKey}}<script async defer src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>
 {{end}}<style>{{styles}}</style></head><body>
 {{- end}}
 
@@ -18,10 +20,21 @@
 
 {{define "nav"}}{{template "github"}}{{if eq . "authed"}}<a href="/dashboard">dashboard</a>{{else}}<a href="/login">log in</a><a href="/signup" class="btn-sm">sign up</a>{{end}}{{end}}
 
-{{define "pagetop"}}{{template "head" .}}
-<header>{{template "logo"}}<nav class="nav">{{template "nav" .Nav}}</nav></header>
-<main>{{end}}
+{{define "menubtn"}}<button class="menu-btn" type="button" aria-label="menu" aria-controls="site-menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>{{end}}
 
-{{define "pagebottom"}}</main></body></html>{{end}}
+{{define "footer"}}<footer><span class="muted">pintr — codex image generation over mcp</span><span class="footer-links"><a href="/llms.txt">llms.txt</a> · <a href="https://github.com/giulianoo0/pintr" target="_blank" rel="noopener">source</a></span></footer>{{end}}
 
 {{define "csrf"}}<input type="hidden" name="csrf" value="{{.}}">{{end}}
+
+{{define "turnstile"}}{{if turnstileSiteKey}}<div class="cf-turnstile" data-sitekey="{{turnstileSiteKey}}"></div>
+{{end}}{{end}}
+
+{{define "pagetop"}}{{template "head" .}}
+<header>{{template "logo"}}<nav class="nav">{{template "nav" .Nav}}</nav>{{template "menubtn"}}</header>
+<div class="menu" id="site-menu"><nav class="menu-items">{{template "nav" .Nav}}<a href="/llms.txt">llms.txt</a></nav></div>
+<main>{{end}}
+
+{{define "pagebottom"}}</main>
+{{template "footer"}}
+<script>{{script}}</script>
+</body></html>{{end}}
