@@ -79,11 +79,17 @@ dashboard. Keep it secret — anyone with it can generate on your linked account
 Generate an image. Input:
 - `prompt` (string, required) — the full image prompt.
 - `reference_images` (string[], optional) — images to anchor a character or
-  style, passed as short handles. Do NOT base64-encode or inline images — upload
-  the RAW bytes to POST /upload (see below) and pass the returned `ref_...`
-  handle. Stdio: pass file paths. Hosted uploads are stored encrypted and
-  auto-delete 1 hour after upload; within that hour the same handle can be
-  reused across multiple generate_image calls (upload once, reuse the handle).
+  style. How to pass them depends on the mode, because MCP has no mechanism for
+  a remote server to read the client's filesystem:
+  - **Local stdio server: pass LOCAL FILE PATHS.** The server runs on your
+    machine and reads them directly off disk — never upload or base64-encode
+    anything in this mode.
+  - **Hosted server (pintr.giuli.dev): upload first.** POST the raw bytes to
+    /upload (see below) and pass the returned `ref_...` handle. Uploads are
+    stored encrypted and auto-delete 1 hour after upload; within that hour the
+    same handle can be reused across multiple generate_image calls (upload
+    once, reuse the handle).
+  - In both modes, base64 / `data:` URLs are rejected.
 
 Generation can take up to 420 seconds — a long-running call is not stuck.
 The server streams MCP progress notifications while it works and errors out
@@ -92,7 +98,9 @@ after 10 minutes.
 Result (hosted): `asset_url` (presigned ciphertext), `decrypted_asset_url` (open
 in a browser to view the decrypted PNG), `decryption_key`, `mime_type`, `model`,
 `account`, `duration_ms`, `size_bytes`, and `usage` (the account's remaining
-rate limits). Always open `decrypted_asset_url` to view the result.
+rate limits). Always open `decrypted_asset_url` to view the result. Stored
+images are permanently deleted from storage 24 hours after generation —
+download the PNG if you need it longer.
 Result (stdio): `saved_path` plus the same metadata.
 
 ### get_usage
@@ -137,7 +145,8 @@ Dashboard (browser, session cookie + CSRF):
 - `POST /accounts/default`, `POST /accounts/remove` — manage linked accounts.
 - `POST /keys/create`, `POST /keys/remove` — personal access keys.
 - `POST /tokens/revoke` — invalidate all issued OAuth tokens (per-user kill switch).
-- `POST /assets/purge` — delete all stored images (and uploads) for the user.
+- `POST /assets/purge` — delete the user's stored objects; the `kind` field
+  picks `generated` images, reference `uploads`, or (default) both.
 - `POST /account/delete` — permanently delete the account and everything it owns
   (linked accounts, keys, sessions, and all stored objects in S3).
 - `GET /llms.txt` — this document.
@@ -150,6 +159,10 @@ Dashboard (browser, session cookie + CSRF):
   random AES-256-GCM key*. Only ciphertext is stored; the key is returned once in
   the response (or embedded in the upload handle) and never persisted. The bucket
   and pintr itself only ever hold ciphertext they cannot read.
+- Retention: a background janitor permanently deletes expired objects from the
+  bucket — reference uploads 1 hour after upload, generated images 24 hours
+  after generation (matching the presigned URL lifetime). Users can also delete
+  everything immediately from the dashboard.
 - The encryption protects data at rest (bucket operator, backups, a stolen DB),
   not against a compromised pintr process — pintr necessarily sees each image in
   memory at creation time.

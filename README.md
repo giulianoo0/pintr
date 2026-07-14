@@ -105,15 +105,14 @@ codex, and so on. for scripts and curl, send your access key directly as
 | field | required | what it is |
 | --- | --- | --- |
 | `prompt` | yes | the full image prompt |
-| `reference_images` | no | reference images to anchor a look or character: `ref_` upload handles or base64/`data:` urls (hosted), or file paths (local stdio). uploads are encrypted and expire after 1 hour |
-| `output_path` | no | stdio mode only: where to write the png. ignored by the hosted server |
+| `reference_images` | no | reference images to anchor a look or character. local stdio: **file paths** (the server reads them off disk — no upload). hosted: `ref_` handles from `POST /upload` (a remote server cannot read your files). base64/`data:` urls are rejected in both modes |
 
 the driver model is fixed to `gpt-5.6-terra` server-side, so a client cannot pass
 a bogus or unexpected model.
 
 delivery differs by mode:
 
-- **stdio**: the png is written to `output_path`.
+- **stdio**: the png is written to a pintr-chosen cache path, returned as `saved_path`.
 - **hosted**: see below.
 
 ## how the hosted server handles your data
@@ -135,14 +134,17 @@ being blunt about what is and isn't stored, because it matters:
   the bucket. consequences, stated plainly:
   - the bucket and pintr itself only ever hold ciphertext they cannot read.
   - the dashboard **cannot show you your images** — there are no keys to decrypt
-    them with. it can only tell you how many you have and **delete all of them**.
+    them with. it can only tell you how many you have and **delete them**.
   - if you lose the key from a response, that image is unrecoverable by design.
+  - generated images are **permanently deleted from the bucket 24 hours after
+    generation** (the presigned url dies at the same time) — download the png
+    if you want to keep it.
 - **reference images**: in hosted mode, upload them to `/upload` and pass the
-  returned `ref_` handle (or inline base64 / `data:` url for small images); the
-  server will not read a file path off its own disk. uploads are encrypted like
-  generated images (the key lives only inside the handle, never server-side) and
-  are **deleted automatically 1 hour after upload** — within that hour the same
-  handle can be reused across calls.
+  returned `ref_` handle; the server will not read a file path off its own disk
+  and rejects base64 / `data:` urls. uploads are encrypted like generated images
+  (the key lives only inside the handle, never server-side) and are
+  **permanently deleted from the bucket 1 hour after upload** — within that hour
+  the same handle can be reused across calls.
 - the `generate_image` response gives you a **presigned download url** for the
   ciphertext (valid ~24h) plus the `decryption_key`. to get the png: download
   the url, then AES-256-GCM decrypt with the key — the 12-byte nonce is the
