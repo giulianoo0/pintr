@@ -13,7 +13,7 @@ pintr never asks for an API key. You sign in with a ChatGPT account through
 OAuth; the driver model is fixed server-side (gpt-5.6-terra) so callers cannot
 pass a different or bogus model.
 
-## Modes
+Two modes:
 
 - **Hosted (HTTP, multi-user):** users register (email + password), link one or
   more ChatGPT accounts from a dashboard, and connect MCP clients via the
@@ -23,36 +23,42 @@ pass a different or bogus model.
   with a local browser flow and saves tokens to `~/.config/pintr/auth.json`.
   Generated images are written to a pintr-chosen cache path returned as `saved_path`.
 
-## Connecting an MCP client
+# Usage
 
-Point the client at the MCP endpoint by URL; no token is pasted into config:
+## Connecting a client (hosted)
+
+pintr speaks streamable HTTP MCP at `https://pintr.giuli.dev/mcp`. Two auth
+methods, both accepted on `/mcp` and `/upload`:
+
+1. **MCP OAuth (recommended):** point the client at the URL. On first use it
+   gets a 401, discovers the OAuth endpoints, and opens your browser; you log
+   in to pintr and click allow, and the client keeps its own auto-refreshed
+   token.
+2. **Personal access key:** create one on the dashboard (shown once,
+   `pintr_...`) and send it as a static header:
+   `Authorization: Bearer pintr_YOURKEY`. It never expires until revoked.
+
+Per-harness setup:
+
+### Claude Code
 
 ```
 claude mcp add --transport http pintr https://pintr.giuli.dev/mcp
 ```
 
-On first use the client gets a 401, discovers the OAuth endpoints, and opens the
-browser. You log in to pintr and click allow; the client receives its own token
-(auto-refreshed). Any MCP client with remote support works — Claude Code,
-OpenCode, PI, and others: add the URL as a remote (http) MCP server.
+With an access key instead of OAuth:
 
-## Connecting with an access key manually (no OAuth flow)
-
-If you don't want the browser OAuth flow, use a personal access key as a static
-bearer header. Both auth methods work on `/mcp` and `/upload`.
-
-1. Create an account and, on the dashboard, click "new access key". Copy it
-   (`pintr_...`) — it is shown only once.
-2. Add the server with the key as an `Authorization: Bearer` header:
-
-Claude Code:
 ```
 claude mcp add --transport http pintr https://pintr.giuli.dev/mcp \
   --header "Authorization: Bearer pintr_YOURKEY"
 ```
 
-Any client that runs a command (Claude Desktop config, etc.), via the mcp-remote
-bridge:
+### Claude Desktop
+
+Settings → Connectors → "Add custom connector" → paste
+`https://pintr.giuli.dev/mcp`. Or via the mcp-remote bridge in
+`claude_desktop_config.json`:
+
 ```json
 {
   "mcpServers": {
@@ -65,13 +71,99 @@ bridge:
 }
 ```
 
-Scripts / curl send the same header directly:
-```
-curl -H "Authorization: Bearer pintr_YOURKEY" ... https://pintr.giuli.dev/mcp
+### OpenCode
+
+`opencode mcp add` (interactive), or in `opencode.json`
+(project or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "pintr": {
+      "type": "remote",
+      "url": "https://pintr.giuli.dev/mcp",
+      "enabled": true
+    }
+  }
+}
 ```
 
-The key maps to your account and never expires until you revoke it from the
-dashboard. Keep it secret — anyone with it can generate on your linked accounts.
+Add `"headers": {"Authorization": "Bearer pintr_YOURKEY"}` to use an access
+key instead of OAuth.
+
+### PI (pi coding agent)
+
+In the MCP config (`.mcp.json` / pi settings):
+
+```json
+{
+  "mcp": {
+    "pintr": {
+      "type": "remote",
+      "url": "https://pintr.giuli.dev/mcp"
+    }
+  }
+}
+```
+
+Optional access key: `"headers": {"Authorization": "Bearer pintr_YOURKEY"}`.
+
+### Codex CLI
+
+```
+codex mcp add pintr --url https://pintr.giuli.dev/mcp
+```
+
+Or in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.pintr]
+url = "https://pintr.giuli.dev/mcp"
+# optional access key instead of OAuth:
+# bearer_token_env_var = "PINTR_KEY"   # export PINTR_KEY=pintr_YOURKEY
+```
+
+### Antigravity (CLI + IDE)
+
+Shared config at `~/.gemini/config/mcp_config.json` (note `serverUrl`, not
+`url`):
+
+```json
+{
+  "mcpServers": {
+    "pintr": {
+      "serverUrl": "https://pintr.giuli.dev/mcp"
+    }
+  }
+}
+```
+
+Optional access key: `"headers": {"Authorization": "Bearer pintr_YOURKEY"}`.
+
+### Grok Build
+
+Grok Build reads Claude-style MCP config (`.mcp.json` in the project):
+
+```json
+{
+  "mcpServers": {
+    "pintr": {
+      "type": "http",
+      "url": "https://pintr.giuli.dev/mcp"
+    }
+  }
+}
+```
+
+For grok.com chat: grok.com/connectors → New Connector → Custom → paste the
+URL and finish the auth flow.
+
+### Anything else
+
+Any MCP client with remote (streamable HTTP) support works: add a remote MCP
+server pointing at `https://pintr.giuli.dev/mcp`. If the client can't run the
+OAuth flow, pass `Authorization: Bearer pintr_YOURKEY` as a header. Plain
+scripts/curl send the same header directly.
 
 ## MCP tools
 
@@ -134,7 +226,9 @@ Assets (all content encrypted at rest; keys are returned once and never stored):
   server-side, and returns the raw image (`image/png`). This is what
   `decrypted_asset_url` points to.
 
-Dashboard (browser, session cookie + CSRF):
+Dashboard (browser, session cookie + CSRF; signup/login and the linking/consent
+forms may additionally require a Cloudflare Turnstile check when the operator
+enables it):
 
 - `GET /` — landing (redirects to /dashboard when signed in).
 - `GET|POST /signup` — create an account (no key is minted at signup).
@@ -151,7 +245,7 @@ Dashboard (browser, session cookie + CSRF):
   (linked accounts, keys, sessions, and all stored objects in S3).
 - `GET /llms.txt` — this document.
 
-## Encryption model
+## Encryption, retention & privacy
 
 - ChatGPT tokens are stored encrypted at rest (AES-256-GCM, key derived from the
   server secret which lives only in the environment). Passwords use argon2id.
@@ -168,15 +262,43 @@ Dashboard (browser, session cookie + CSRF):
   memory at creation time.
 - Optional anonymous analytics (Plausible): when enabled by the operator, the
   server counts events like signups and generations. An event is only a name —
-  no user id, IP, prompt, or image data is ever sent.
+  no user id, IP, prompt, or image data is ever sent. The hosted instance at
+  pintr.giuli.dev has this enabled.
 
-## Self-hosting
+# Self-hosting
 
-Environment (see `.env.example`): `PINTR_PUBLIC_URL`, `PINTR_DB` (SQLite),
-`PINTR_SECRET` (>= 32 random chars; signs tokens and encrypts stored
-credentials — keep it stable), and `PINTR_S3_*` (`PINTR_S3_ENDPOINT`,
-`PINTR_S3_BUCKET`, `PINTR_S3_ACCESS_KEY_ID`, `PINTR_S3_SECRET_ACCESS_KEY`,
-`PINTR_S3_REGION`, and optional `PINTR_S3_PUBLIC_BASE` for a bucket-bound custom
-domain). Run with `pintr -http 127.0.0.1:8090` behind an HTTPS reverse proxy
-with response buffering off. Without `PINTR_S3_*` the server runs but image
-generation is disabled.
+## Local stdio server (single user)
+
+Build and point your MCP client at the binary (stdio transport):
+
+```
+go build -o pintr ./cmd/pintr
+./pintr login          # optional: browser login up front
+./pintr                # serve MCP over stdio (logs in first if needed)
+```
+
+Tokens are saved to `~/.config/pintr/auth.json` (0600). Reference images are
+local file paths; results are written to a pintr-chosen cache path
+(`saved_path`).
+
+## Hosted server (multi user)
+
+Environment (see `.env.example`):
+
+- `PINTR_PUBLIC_URL` — public https base clients reach.
+- `PINTR_DB` — SQLite path.
+- `PINTR_SECRET` — >= 32 random chars; signs tokens and encrypts stored
+  credentials. Keep it stable: rotating it makes every stored ChatGPT token
+  undecryptable (users must re-link).
+- `PINTR_S3_*` — `PINTR_S3_ENDPOINT`, `PINTR_S3_BUCKET`,
+  `PINTR_S3_ACCESS_KEY_ID`, `PINTR_S3_SECRET_ACCESS_KEY`, `PINTR_S3_REGION`,
+  and optional `PINTR_S3_PUBLIC_BASE` for a bucket-bound custom domain.
+  Without these the server runs but image generation is disabled.
+- `PINTR_PLAUSIBLE_DOMAIN` / `PINTR_PLAUSIBLE_SCRIPT` — optional anonymous
+  analytics (see above); both unset = fully off.
+- `PINTR_TURNSTILE_SITE_KEY` / `PINTR_TURNSTILE_SECRET_KEY` — optional
+  Cloudflare Turnstile on signup/login and the linking/consent forms,
+  validated server-side; both unset = no captcha anywhere.
+
+Run `pintr -http 127.0.0.1:8090` behind an HTTPS reverse proxy with response
+buffering off (generations stream progress for minutes).
