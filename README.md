@@ -105,7 +105,7 @@ codex, and so on. for scripts and curl, send your access key directly as
 | field | required | what it is |
 | --- | --- | --- |
 | `prompt` | yes | the full image prompt |
-| `reference_images` | no | reference images to anchor a look or character: base64 or `data:` urls (hosted), or file paths (local stdio). never stored |
+| `reference_images` | no | reference images to anchor a look or character: `ref_` upload handles or base64/`data:` urls (hosted), or file paths (local stdio). uploads are encrypted and expire after 1 hour |
 | `output_path` | no | stdio mode only: where to write the png. ignored by the hosted server |
 
 the driver model is fixed to `gpt-5.6-terra` server-side, so a client cannot pass
@@ -137,9 +137,12 @@ being blunt about what is and isn't stored, because it matters:
   - the dashboard **cannot show you your images** — there are no keys to decrypt
     them with. it can only tell you how many you have and **delete all of them**.
   - if you lose the key from a response, that image is unrecoverable by design.
-- **reference images** you pass are sent to Codex for that one request and are
-  **not stored anywhere**. in hosted mode they must be inline (base64 / `data:`
-  url); the server will not read a file path off its own disk.
+- **reference images**: in hosted mode, upload them to `/upload` and pass the
+  returned `ref_` handle (or inline base64 / `data:` url for small images); the
+  server will not read a file path off its own disk. uploads are encrypted like
+  generated images (the key lives only inside the handle, never server-side) and
+  are **deleted automatically 1 hour after upload** — within that hour the same
+  handle can be reused across calls.
 - the `generate_image` response gives you a **presigned download url** for the
   ciphertext (valid ~24h) plus the `decryption_key`. to get the png: download
   the url, then AES-256-GCM decrypt with the key — the 12-byte nonce is the

@@ -182,10 +182,16 @@ func (a *assetStore) presignGet(ctx context.Context, objectKey string) (string, 
 	return presigned.URL, nil
 }
 
+// uploadTTL is how long an uploaded reference image is kept before the janitor
+// deletes it. Uploads used to be one-shot (deleted on first fetch, before the
+// generation even ran), which broke agent retries after a client timeout and
+// multi-image runs that reuse the same reference handle.
+const uploadTTL = time.Hour
+
 // putUploadEncrypted encrypts an uploaded reference image under a fresh key,
 // stores only the ciphertext, and returns a short opaque handle that carries
-// the id and key (so nothing is stored server-side). The upload is deleted the
-// moment it's used (see fetchUploadAndDelete).
+// the id and key (so no key is stored server-side). The upload stays reusable
+// until the janitor expires it after uploadTTL (see sweepExpiredUploads).
 func (a *assetStore) putUploadEncrypted(ctx context.Context, userID string, img []byte) (string, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -222,9 +228,10 @@ func (a *assetStore) putUploadEncrypted(ctx context.Context, userID string, img 
 	return "ref_" + id + "." + base64.RawURLEncoding.EncodeToString(key), nil
 }
 
-// fetchUploadAndDelete downloads an uploaded reference, decrypts it, and always
-// deletes it from storage afterwards (best-effort) so uploads are one-shot.
-func (a *assetStore) fetchUploadAndDelete(ctx context.Context, userID, handle string) ([]byte, error) {
+// fetchUpload downloads and decrypts an uploaded reference. The object is left
+// in place so the same handle keeps working across retries and multiple
+// generations; expiry is the janitor's job (uploadTTL).
+func (a *assetStore) fetchUpload(ctx context.Context, userID, handle string) ([]byte, error) {
 	rest := strings.TrimPrefix(handle, "ref_")
 	id, keyEnc, ok := strings.Cut(rest, ".")
 	if !ok || id == "" {
@@ -242,10 +249,6 @@ func (a *assetStore) fetchUploadAndDelete(ctx context.Context, userID, handle st
 	}
 	blob, readErr := io.ReadAll(io.LimitReader(out.Body, 64<<20))
 	out.Body.Close()
-	// Always delete after use, whatever happens next.
-	if _, delErr := a.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &a.bucket, Key: &objectKey}); delErr != nil {
-		log.Printf("warning: could not delete used upload %s: %v", objectKey, delErr)
-	}
 	if readErr != nil {
 		return nil, readErr
 	}
@@ -263,6 +266,59 @@ func (a *assetStore) fetchUploadAndDelete(ctx context.Context, userID, handle st
 	}
 	nonce, ciphertext := blob[:gcm.NonceSize()], blob[gcm.NonceSize():]
 	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+// startUploadJanitor sweeps expired reference uploads in the background so a
+// forgotten handle doesn't keep ciphertext around forever.
+func (a *assetStore) startUploadJanitor(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			if n, err := a.sweepExpiredUploads(ctx); err != nil {
+				log.Printf("upload janitor: %v", err)
+			} else if n > 0 {
+				log.Printf("upload janitor: deleted %d expired upload(s)", n)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// sweepExpiredUploads deletes every reference upload older than uploadTTL,
+// across all users, and returns how many it removed.
+func (a *assetStore) sweepExpiredUploads(ctx context.Context) (int, error) {
+	cutoff := time.Now().Add(-uploadTTL)
+	prefix := "uploads/"
+	deleted := 0
+	paginator := s3.NewListObjectsV2Paginator(a.client, &s3.ListObjectsV2Input{Bucket: &a.bucket, Prefix: &prefix})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return deleted, err
+		}
+		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
+		for _, obj := range page.Contents {
+			if obj.LastModified != nil && obj.LastModified.Before(cutoff) {
+				ids = append(ids, types.ObjectIdentifier{Key: obj.Key})
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if _, err := a.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: &a.bucket,
+			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
+		}); err != nil {
+			return deleted, err
+		}
+		deleted += len(ids)
+	}
+	return deleted, nil
 }
 
 // countAssets counts a user's stored objects (for the dashboard).

@@ -510,7 +510,8 @@ func (h *webHandlers) handleUsageRefresh(w http.ResponseWriter, r *http.Request)
 // handleUpload accepts a reference image (raw bytes, bearer-authenticated),
 // encrypts and stores it, and returns a short handle. The handle goes into a
 // generate_image call instead of the image bytes, keeping large data out of the
-// model's context. The upload is deleted the moment it's used.
+// model's context. The upload stays reusable for one hour, then the janitor
+// deletes it.
 func (h *webHandlers) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

@@ -81,8 +81,13 @@ Generate an image. Input:
 - `reference_images` (string[], optional) — images to anchor a character or
   style, passed as short handles. Do NOT base64-encode or inline images — upload
   the RAW bytes to POST /upload (see below) and pass the returned `ref_...`
-  handle. Stdio: pass file paths. References are sent to Codex for the one
-  request and never stored; hosted uploads are deleted immediately after use.
+  handle. Stdio: pass file paths. Hosted uploads are stored encrypted and
+  auto-delete 1 hour after upload; within that hour the same handle can be
+  reused across multiple generate_image calls (upload once, reuse the handle).
+
+Generation normally takes 60–300 seconds — a long-running call is not stuck.
+The server streams MCP progress notifications while it works and errors out
+after 10 minutes.
 
 Result (hosted): `asset_url` (presigned ciphertext), `decrypted_asset_url` (open
 in a browser to view the decrypted PNG), `decryption_key`, `mime_type`, `model`,
@@ -112,8 +117,8 @@ Assets (all content encrypted at rest; keys are returned once and never stored):
 
 - `POST /upload` — bearer-authed. Upload a raw reference image; the server
   encrypts it, stores only ciphertext, and returns `{ "ref": "ref_<id>.<key>" }`.
-  Pass that handle in `generate_image`; it is fetched, decrypted, and deleted
-  from storage on use. Body must be an image. Size limit: the hosted server sits
+  Pass that handle in `generate_image`; it is reusable until it expires, 1 hour
+  after upload. Body must be an image. Size limit: the hosted server sits
   behind Cloudflare, which caps request bodies at ~10 MB, so keep uploads under
   ~10 MB (downscale large references); the server itself caps at 25 MiB. There
   is no chunked/resumable upload — send the whole file in one request.

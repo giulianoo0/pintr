@@ -25,12 +25,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const serverVersion = "0.2.0"
+
+// Generation normally takes 60–300s; give it 10 minutes before reporting an
+// error. Progress notifications every few seconds keep MCP clients (whose
+// default tool timeouts are shorter than a generation) from giving up, and
+// keep bytes flowing so Cloudflare/nginx don't idle the connection out.
+const (
+	generationTimeout = 10 * time.Minute
+	progressInterval  = 10 * time.Second
+)
 
 func main() {
 	httpAddr := flag.String("http", "", "serve the HTTP app + MCP on this address instead of stdio")
@@ -77,6 +87,8 @@ func newMCPServer(generate generateHandler, usage usageHandler) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "generate_image",
 		Description: "Generate an image with the Codex image model (GPT Image, gpt-5.6-terra). " +
+			"Generation normally takes 60–300 seconds — do NOT treat a long-running call as stuck; the server " +
+			"streams progress notifications and only errors out after 10 minutes. " +
 			"ALWAYS look at the image after generating: open decrypted_asset_url from the result (hosted) or read " +
 			"saved_path (local stdio) and view it, so you can confirm it matches the request before continuing. " +
 			"decrypted_asset_url returns the decrypted PNG (image/png) directly, no decryption needed on your side. " +
@@ -85,7 +97,15 @@ func newMCPServer(generate generateHandler, usage usageHandler) *mcp.Server {
 			"For reference_images: do NOT base64-encode or inline images — upload the raw bytes to the server's " +
 			"/upload endpoint and pass the returned ref_ handle (see the reference_images field).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
-		return generate(ctx, args)
+		ctx, cancel := context.WithTimeout(ctx, generationTimeout)
+		defer cancel()
+		stopProgress := startProgress(ctx, req)
+		res, out, err := generate(ctx, args)
+		stopProgress()
+		if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("image generation timed out after %s (it normally takes 60–300s) — try again", generationTimeout)
+		}
+		return res, out, err
 	})
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "get_usage",
@@ -95,6 +115,40 @@ func newMCPServer(generate generateHandler, usage usageHandler) *mcp.Server {
 		return usage(ctx, args)
 	})
 	return server
+}
+
+// startProgress emits MCP progress notifications every progressInterval until
+// the returned stop function is called (or ctx ends). Without them, clients
+// abort a tool call that stays silent for the length of a generation. Only
+// possible when the client sent a progress token; otherwise it's a no-op.
+func startProgress(ctx context.Context, req *mcp.CallToolRequest) func() {
+	token := req.Params.GetProgressToken()
+	if token == nil || req.Session == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(progressInterval)
+		defer ticker.Stop()
+		startedAt := time.Now()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				elapsed := int(time.Since(startedAt).Seconds())
+				_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+					ProgressToken: token,
+					Progress:      float64(elapsed),
+					Message:       fmt.Sprintf("generating… %ds elapsed (normal: 60–300s)", elapsed),
+				})
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
 }
 
 // writeLocalPNG saves the image to a pintr-managed cache dir (a path pintr
@@ -154,17 +208,20 @@ func stdioUsage(fileStore *authStore) usageHandler {
 }
 
 // resolveHostedReferences turns each reference into a data: URL. A "ref_" handle
-// is an uploaded image: it's fetched, decrypted, and deleted from storage. A
-// data:/base64 value is used inline (fine for small images). A file path is
-// rejected — a remote server can't read the caller's filesystem.
+// is an uploaded image: it's fetched and decrypted (it stays reusable until it
+// expires, one hour after upload). A data:/base64 value is used inline (fine
+// for small images). A file path is rejected — a remote server can't read the
+// caller's filesystem.
 func resolveHostedReferences(ctx context.Context, assets *assetStore, userID string, refs []string) ([]string, error) {
 	out := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		ref = strings.TrimSpace(ref)
 		if strings.HasPrefix(ref, "ref_") {
-			img, err := assets.fetchUploadAndDelete(ctx, userID, ref)
+			img, err := assets.fetchUpload(ctx, userID, ref)
 			if err != nil {
-				return nil, fmt.Errorf("reference %q: %w", ref, err)
+				// Log the id only — the part after the dot is the decryption key.
+				logImage("reference %s failed: %v", refID(ref), err)
+				return nil, fmt.Errorf("reference %s: %w (uploads expire 1 hour after upload — re-upload to /upload and retry with the new handle)", refID(ref), err)
 			}
 			out = append(out, bytesToDataURL(img))
 			continue
@@ -176,6 +233,15 @@ func resolveHostedReferences(ctx context.Context, assets *assetStore, userID str
 		out = append(out, dataURL)
 	}
 	return out, nil
+}
+
+// refID returns the public id part of a ref_ handle, safe for logs and error
+// messages (the segment after the dot is the decryption key).
+func refID(handle string) string {
+	if id, _, ok := strings.Cut(handle, "."); ok {
+		return id
+	}
+	return handle
 }
 
 func hostedUsage(st *store) usageHandler {
@@ -275,6 +341,8 @@ func serveHTTP(addr string) {
 	assets := newAssetStore()
 	if assets == nil {
 		log.Print("warning: PINTR_S3_* not set — image storage disabled; generate_image will error until configured")
+	} else {
+		assets.startUploadJanitor(context.Background())
 	}
 
 	provider := newOAuthProvider(publicURL, st)
