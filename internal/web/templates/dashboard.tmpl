@@ -36,28 +36,16 @@
 <section class="tabpane" id="p-connect">
 <p>add pintr to your mcp client by url: <code>{{.Resource}}</code>. on first connect your browser opens; you log in to pintr and click allow, and the client keeps its own token (auto-refreshed). prefer a static key? create one in the keys tab and pass it as an <code>Authorization: Bearer pintr_YOURKEY</code> header.</p>
 <input class="dtab" type="radio" name="ctab" id="c-claude" checked>
-<input class="dtab" type="radio" name="ctab" id="c-desktop">
 <input class="dtab" type="radio" name="ctab" id="c-opencode">
 <input class="dtab" type="radio" name="ctab" id="c-pi">
 <input class="dtab" type="radio" name="ctab" id="c-codex">
 <input class="dtab" type="radio" name="ctab" id="c-antigravity">
 <input class="dtab" type="radio" name="ctab" id="c-grok">
 <input class="dtab" type="radio" name="ctab" id="c-other">
-<div class="htabs-wrap"><nav class="htabs"><span class="hslider"></span><label for="c-claude">Claude Code</label><label for="c-desktop">Claude Desktop</label><label for="c-opencode">OpenCode</label><label for="c-pi">PI</label><label for="c-codex">Codex</label><label for="c-antigravity">Antigravity</label><label for="c-grok">Grok Build</label><label for="c-other">other</label></nav></div>
+<div class="htabs-wrap"><nav class="htabs"><span class="hslider"></span><label for="c-claude">Claude Code</label><label for="c-opencode">OpenCode</label><label for="c-pi">PI</label><label for="c-codex">Codex</label><label for="c-antigravity">Antigravity</label><label for="c-grok">Grok Build</label><label for="c-other">Other</label></nav></div>
 <div class="hpane" id="hp-claude">
 <pre><code>claude mcp add --transport http pintr {{.Resource}}</code></pre>
 <p class="muted">with an access key instead of oauth: append <code>--header "Authorization: Bearer pintr_YOURKEY"</code></p>
-</div>
-<div class="hpane" id="hp-desktop">
-<p>settings → connectors → <b>add custom connector</b> → paste <code>{{.Resource}}</code>. or via the mcp-remote bridge in <code>claude_desktop_config.json</code>:</p>
-<pre><code>{
-  "mcpServers": {
-    "pintr": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "{{.Resource}}"]
-    }
-  }
-}</code></pre>
 </div>
 <div class="hpane" id="hp-opencode">
 <p><code>opencode mcp add</code> (interactive), or in <code>opencode.json</code>:</p>

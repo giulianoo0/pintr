@@ -53,24 +53,6 @@ claude mcp add --transport http pintr https://pintr.giuli.dev/mcp \
   --header "Authorization: Bearer pintr_YOURKEY"
 ```
 
-### Claude Desktop
-
-Settings → Connectors → "Add custom connector" → paste
-`https://pintr.giuli.dev/mcp`. Or via the mcp-remote bridge in
-`claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "pintr": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://pintr.giuli.dev/mcp",
-               "--header", "Authorization: Bearer pintr_YOURKEY"]
-    }
-  }
-}
-```
-
 ### OpenCode
 
 `opencode mcp add` (interactive), or in `opencode.json`
