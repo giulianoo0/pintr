@@ -85,7 +85,7 @@ Generate an image. Input:
   auto-delete 1 hour after upload; within that hour the same handle can be
   reused across multiple generate_image calls (upload once, reuse the handle).
 
-Generation normally takes 60–300 seconds — a long-running call is not stuck.
+Generation can take up to 420 seconds — a long-running call is not stuck.
 The server streams MCP progress notifications while it works and errors out
 after 10 minutes.
 

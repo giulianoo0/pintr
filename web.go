@@ -784,6 +784,7 @@ h2{font-size:1rem;margin:2.2rem 0 .6rem;color:#bdbdbd}
 h3{margin:0 0 .3rem;font-size:.95rem}
 .lead{font-size:1.1rem;color:#d4d4d4;max-width:44rem}
 input,textarea{width:100%%;box-sizing:border-box;background:#1a1a1c;color:#e7e7e7;border:1px solid #333;border-radius:6px;padding:.55rem;margin:.35rem 0;font-family:inherit;max-width:26rem}
+textarea{display:block;resize:none}
 button{background:#2b6cb0;color:#fff;border:0;border-radius:6px;padding:.55rem 1.1rem;margin-top:.35rem;cursor:pointer;font-size:.95rem}
 a.btn{display:inline-block;background:#2b6cb0;color:#fff;border-radius:6px;padding:.55rem 1.1rem;text-decoration:none;font-size:.95rem}
 button.link{background:none;color:#63b3ed;padding:0;margin:0;font-size:.85rem}

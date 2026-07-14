@@ -33,7 +33,7 @@ import (
 
 const serverVersion = "0.2.0"
 
-// Generation normally takes 60–300s; give it 10 minutes before reporting an
+// Generation can take up to 420s; give it 10 minutes before reporting an
 // error. Progress notifications every few seconds keep MCP clients (whose
 // default tool timeouts are shorter than a generation) from giving up, and
 // keep bytes flowing so Cloudflare/nginx don't idle the connection out.
@@ -87,7 +87,7 @@ func newMCPServer(generate generateHandler, usage usageHandler) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "generate_image",
 		Description: "Generate an image with the Codex image model (GPT Image, gpt-5.6-terra). " +
-			"Generation normally takes 60–300 seconds — do NOT treat a long-running call as stuck; the server " +
+			"Generation can take up to 420 seconds — do NOT treat a long-running call as stuck; the server " +
 			"streams progress notifications and only errors out after 10 minutes. " +
 			"ALWAYS look at the image after generating: open decrypted_asset_url from the result (hosted) or read " +
 			"saved_path (local stdio) and view it, so you can confirm it matches the request before continuing. " +
@@ -103,7 +103,7 @@ func newMCPServer(generate generateHandler, usage usageHandler) *mcp.Server {
 		res, out, err := generate(ctx, args)
 		stopProgress()
 		if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			err = fmt.Errorf("image generation timed out after %s (it normally takes 60–300s) — try again", generationTimeout)
+			err = fmt.Errorf("image generation timed out after %s (it can take up to 420s) — try again", generationTimeout)
 		}
 		return res, out, err
 	})
@@ -142,7 +142,7 @@ func startProgress(ctx context.Context, req *mcp.CallToolRequest) func() {
 				_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
 					ProgressToken: token,
 					Progress:      float64(elapsed),
-					Message:       fmt.Sprintf("generating… %ds elapsed (normal: 60–300s)", elapsed),
+					Message:       fmt.Sprintf("generating… %ds elapsed (can take up to 420s)", elapsed),
 				})
 			}
 		}
