@@ -1,5 +1,5 @@
 *{box-sizing:border-box}
-body{background:#0f0f10;color:#e7e7e7;font-family:'Geist',system-ui,-apple-system,sans-serif;margin:0;line-height:1.55}
+body{background:#0f0f10;color:#e7e7e7;font-family:'Geist',system-ui,-apple-system,sans-serif;margin:0;line-height:1.55;display:flex;flex-direction:column;min-height:100vh;min-height:100svh}
 header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
 .logo{display:inline-flex;align-items:center;gap:.5rem;text-decoration:none;color:#fff;font-weight:700;font-size:1.15rem;letter-spacing:-.01em}
 .logo svg{display:block}
@@ -7,7 +7,7 @@ header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-it
 .nav a{color:#bdbdbd;text-decoration:none;display:inline-flex;align-items:center}
 .nav a:hover{color:#fff}
 .nav a.btn-sm{background:#2b6cb0;color:#fff;border-radius:6px;padding:.4rem .85rem}
-main{max-width:64rem;margin:0 auto;padding:1.4rem 1.5rem 3rem}
+main{width:100%;max-width:64rem;margin:0 auto;padding:1.4rem 1.5rem 3rem;flex:1 0 auto}
 .hero{margin:1.5rem 0 .5rem}
 .hero-title{font-size:2rem;font-weight:750;letter-spacing:-.02em;margin:0 0 .6rem;line-height:1.15}
 input.dtab{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
@@ -68,7 +68,7 @@ pre{background:#1a1a1c;border:1px solid #262626;border-radius:8px;padding:.75rem
 pre code{background:none;padding:0;word-break:normal;white-space:pre}
 .table-wrap{overflow-x:auto}
 .cf-turnstile{margin:.6rem 0}
-footer{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem 2rem;border-top:1px solid #1e1e20;color:#6f6f6f;font-size:.8rem;display:flex;justify-content:space-between;align-items:center;gap:.6rem 1.2rem;flex-wrap:wrap}
+footer{width:100%;max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem 1.6rem;border-top:1px solid #1e1e20;color:#6f6f6f;font-size:.8rem;display:flex;justify-content:center;align-items:center;gap:.6rem 1.2rem;flex-wrap:wrap}
 footer a{color:#9a9a9a}
 .footer-links{white-space:nowrap}
 .menu-btn{display:none;background:none;border:0;color:#c9c9c9;padding:.4rem;margin:0;cursor:pointer;line-height:0}
