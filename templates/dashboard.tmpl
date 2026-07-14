@@ -1,0 +1,59 @@
+{{/* The tabbed dashboard. Radios come first, then the header (sliding tabs +
+     logout), then the panes in <main> — the CSS-only tabs
+     (#radio:checked ~ header/main …) need both after the radios. */}}
+
+{{define "usage"}}<div class="limits">{{if .}}{{range .}}<div class="lim"><span class="lim-k">{{.Label}}</span><span class="bar"><span class="{{.Class}}" style="width:{{.Pct}}%"></span></span><span class="lim-v">{{.Pct}}% left</span></div>{{end}}{{else}}no rate-limit data{{end}}</div>{{end}}
+
+{{define "dashboard"}}{{template "head" .}}
+<input class="dtab" type="radio" name="dtab" id="t-accounts" checked>
+<input class="dtab" type="radio" name="dtab" id="t-keys">
+<input class="dtab" type="radio" name="dtab" id="t-connect">
+<input class="dtab" type="radio" name="dtab" id="t-data">
+<header>{{template "logo"}}
+<nav class="tabs"><span class="slider"></span><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label></nav>
+<form method="post" action="/logout" class="logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form></header>
+<main>
+<section class="tabpane" id="p-accounts">
+{{if not .Accounts}}<p class="err">no chatgpt account linked yet. image generation will fail until you add one.</p>{{end}}
+{{range .Accounts}}<div class="acct"><div class="acct-hd"><b>{{.Email}}</b> <span class="muted">{{.Plan}}{{if .IsDefault}} <span class="ok">· default</span>{{end}}</span></div>
+{{- if .HasUsage}}{{template "usage" .Windows}}<div class="fresh" data-age="{{.FreshAge}}" data-left="{{.FreshLeft}}"></div>{{else}}<div class="limits">limits unavailable</div>{{end -}}
+<div class="acct-ft">{{if not .IsDefault}}<form method="post" action="/accounts/default" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link">make default</button></form> · {{end}}<form method="post" action="/accounts/remove" style="display:inline" data-confirm="remove this account?">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger">remove</button></form></div></div>
+{{end}}
+<form method="post" action="/link/start" style="display:inline">{{template "csrf" .CSRF}}<button type="submit">link a chatgpt account</button></form>
+{{if .Accounts}} <form method="post" action="/usage/refresh" style="display:inline">{{template "csrf" .CSRF}}<button type="submit" class="link">refresh limits</button></form>
+<p class="muted">limits are cached ~30 min; refresh (or the get_usage tool) fetches fresh.</p>{{end}}
+</section>
+<section class="tabpane" id="p-keys">
+<p class="muted">access keys authenticate scripts/clients with <code>Authorization: Bearer &lt;key&gt;</code>. mcp clients that logged in through the browser oauth flow show up as "oauth" sessions — revoke any of them here.</p>
+{{if or .Keys .OAuthSessions}}<table><tr><th>key</th><th>name</th><th>created</th><th></th></tr>
+{{range .Keys}}<tr><td><code>{{.Prefix}}…</code></td><td>{{.Name}}</td><td>{{shortDate .CreatedAt}}</td><td><form method="post" action="/keys/remove" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger">revoke</button></form></td></tr>
+{{end}}{{range .OAuthSessions}}<tr><td><span class="muted">oauth session</span></td><td>oauth</td><td>{{shortDate .CreatedAt}}</td><td><form method="post" action="/sessions/remove" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger">revoke</button></form></td></tr>
+{{end}}</table>{{end}}
+<form method="post" action="/keys/create">{{template "csrf" .CSRF}}<input type="text" name="name" placeholder="key name (optional)"><button type="submit">new access key</button></form>
+<p><form method="post" action="/tokens/revoke" data-confirm="sign out all mcp clients? they will have to authorize again.">{{template "csrf" .CSRF}}<button type="submit" class="link danger">revoke all mcp tokens</button></form></p>
+</section>
+<section class="tabpane" id="p-connect">
+<p>add pintr to your mcp client by url. on first connect your browser opens; you log in to pintr and click allow, and the client keeps its own token (auto-refreshed).</p>
+<h3>Claude Code</h3>
+<p><code>claude mcp add --transport http pintr {{.Resource}}</code></p>
+<h3>OpenCode, PI, and other mcp clients</h3>
+<p>add a remote (http) mcp server pointing at <code>{{.Resource}}</code>.</p>
+<h2>use an access key instead (no oauth)</h2>
+<p>create a key in the access keys tab and pass it as a header (works in any client):</p>
+<p><code>claude mcp add --transport http pintr {{.Resource}} --header "Authorization: Bearer pintr_YOURKEY"</code></p>
+</section>
+<section class="tabpane" id="p-data">
+<p class="whoami">signed in as <span class="email" title="hover to reveal">{{.Email}}</span></p>
+<h2>generated assets</h2>
+{{if not .AssetsConfigured}}<p>asset storage is not configured on this server.</p>
+{{else}}{{if .AssetCountKnown}}<p>{{.AssetCount}} encrypted image(s) stored. decryption keys are only returned at generation time and never saved here, so images can't be viewed from this page.</p>
+{{else}}<p>your generated images are stored encrypted. decryption keys are only returned at generation time and never saved here, so images can't be viewed from this page.</p>{{end}}
+<form method="post" action="/assets/purge" data-confirm="permanently delete ALL your stored images? this cannot be undone.">{{template "csrf" .CSRF}}<button type="submit" class="link danger">delete all assets</button></form>
+{{end}}
+<h2 class="danger">danger zone</h2>
+<p>delete your account and <b>everything</b> tied to it — linked chatgpt accounts, access keys, sessions, and all stored images. permanent, cannot be undone.</p>
+<form method="post" action="/account/delete" data-confirm="Delete your account and ALL data permanently? This cannot be undone.">{{template "csrf" .CSRF}}<button type="submit" class="danger-btn">delete my account</button></form>
+</section>
+</main>
+<script>{{.Script}}</script>
+</body></html>{{end}}

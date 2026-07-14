@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -17,6 +16,9 @@ import (
 	"strings"
 	"time"
 )
+
+// The Codex image-generation client: request building, account failover, and
+// reference-image encoding. The SSE stream parser lives in sse.go.
 
 const (
 	codexResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
@@ -37,7 +39,7 @@ var cookiePrimeURLs = []string{"https://chatgpt.com/", "https://chat.openai.com/
 // server writes) — delivery is decided by the server per mode.
 type generateImageArgs struct {
 	Prompt          string   `json:"prompt" jsonschema:"the full image prompt to render"`
-	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style, passed as short handles. Do NOT base64-encode or inline images — that bloats context. To get a handle, upload the RAW image bytes to the server's /upload endpoint (e.g. https://pintr.giuli.dev/upload) with your bearer token, e.g.: curl -s -X POST https://pintr.giuli.dev/upload -H \"Authorization: Bearer <token-or-pintr_key>\" --data-binary @image.png ; it returns {\"ref\":\"ref_...\"}. Pass those ref_... handles here. Keep each upload under ~10 MB (the hosted server is behind Cloudflare, which caps request bodies at ~10 MB) — downscale large reference images; there is no chunked upload. (In local stdio mode, pass a file path instead.) Uploads are stored encrypted and auto-delete after 1 hour, so the same ref_ handle can be reused across multiple generate_image calls within that window — upload once per reference, reuse the handle."`
+	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style. PREFERRED: in local stdio mode, pass a local file PATH — the server runs alongside you and reads the image straight off disk, no upload needed. Do NOT base64-encode, inline, or pass data: URLs — that bloats context and is rejected. Uploading is a LAST RESORT, needed only on the hosted server (which cannot read your files): POST the RAW image bytes to its /upload endpoint (e.g. https://pintr.giuli.dev/upload) with your bearer token, e.g.: curl -s -X POST https://pintr.giuli.dev/upload -H \"Authorization: Bearer <token-or-pintr_key>\" --data-binary @image.png ; it returns {\"ref\":\"ref_...\"}. Pass those ref_... handles here. Keep each upload under ~10 MB (the hosted server is behind Cloudflare, which caps request bodies at ~10 MB) — downscale large reference images; there is no chunked upload. Uploads are stored encrypted and auto-delete after 1 hour, so the same ref_ handle can be reused across multiple generate_image calls within that window — upload once per reference, reuse the handle."`
 }
 
 type generateImageResult struct {
@@ -222,46 +224,28 @@ func runOneGeneration(ctx context.Context, account codexAccount, body []byte) ([
 	return png, time.Since(startedAt).Milliseconds(), nil
 }
 
-// resolveReferences turns caller-provided references into data: URLs. When
-// allowFiles is false (hosted server) only base64 / data: URLs are accepted —
-// never a filesystem path, so a caller can't make the server read arbitrary
-// files.
-func resolveReferences(refs []string, allowFiles bool) ([]string, error) {
+// resolveReferences turns each caller-supplied reference into a data: URL for
+// the Codex request. Used only in local stdio mode, where the server runs
+// alongside the caller and reads its files straight off disk — so a reference is
+// a local file PATH. Inline base64 / data: URLs are rejected on purpose (the
+// hosted server takes uploaded ref_ handles instead; see resolveHostedReferences).
+func resolveReferences(refs []string) ([]string, error) {
 	out := make([]string, 0, len(refs))
 	for _, ref := range refs {
-		dataURL, err := resolveReference(ref, allowFiles)
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return nil, errors.New("empty reference image")
+		}
+		if isDataURL(ref) {
+			return nil, errors.New("pass reference images as local file paths, not inline data: URLs — the local server reads them directly off disk")
+		}
+		dataURL, err := imageFileToDataURL(ref)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reference image %q: %w", truncate(ref, 64), err)
 		}
 		out = append(out, dataURL)
 	}
 	return out, nil
-}
-
-func resolveReference(ref string, allowFiles bool) (string, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "", errors.New("empty reference image")
-	}
-	if isDataURL(ref) {
-		return ref, nil
-	}
-	if raw, err := base64.StdEncoding.DecodeString(ref); err == nil && len(raw) > 0 {
-		if mime := http.DetectContentType(raw); strings.HasPrefix(mime, "image/") {
-			return "data:" + mime + ";base64," + ref, nil
-		}
-	}
-	if allowFiles {
-		return imageFileToDataURL(ref)
-	}
-	return "", errors.New("reference image looks like a file path — this is a remote server and can't read your local files; read the image and pass its bytes (a data: URL or base64) instead")
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
 }
 
 func postCodexResponses(ctx context.Context, client *http.Client, auth codexAuth, body []byte) (*http.Response, error) {
@@ -303,100 +287,6 @@ func primeCookies(ctx context.Context, client *http.Client) {
 		}
 		cancel()
 	}
-}
-
-// consumeImageStream reads the Codex SSE stream and returns the latest (finally
-// the complete) image bytes. Partial images overwrite earlier ones, so the last
-// one is the finished render.
-func consumeImageStream(body io.Reader) ([]byte, error) {
-	reader := bufio.NewReader(body)
-
-	var event string
-	var data strings.Builder
-	var latest []byte
-	failure := ""
-
-	dispatch := func() error {
-		defer func() {
-			event = ""
-			data.Reset()
-		}()
-		if data.Len() == 0 && event == "" {
-			return nil
-		}
-
-		switch event {
-		case "response.image_generation_call.partial_image":
-			var payload struct {
-				PartialImageB64 string `json:"partial_image_b64"`
-			}
-			if err := json.Unmarshal([]byte(data.String()), &payload); err != nil || payload.PartialImageB64 == "" {
-				return nil
-			}
-			imageBytes, err := base64.StdEncoding.DecodeString(payload.PartialImageB64)
-			if err != nil {
-				return fmt.Errorf("decoding partial image: %w", err)
-			}
-			latest = imageBytes
-		case "response.failed", "error":
-			failure = extractSSEError(data.String())
-		}
-		return nil
-	}
-
-	for {
-		line, readErr := reader.ReadString('\n')
-		line = strings.TrimRight(line, "\r\n")
-		switch {
-		case line == "":
-			if err := dispatch(); err != nil {
-				return nil, err
-			}
-		case strings.HasPrefix(line, "event:"):
-			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		case strings.HasPrefix(line, "data:"):
-			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-		}
-
-		if readErr != nil {
-			if dispatchErr := dispatch(); dispatchErr != nil {
-				return nil, dispatchErr
-			}
-			if readErr != io.EOF {
-				return nil, readErr
-			}
-			break
-		}
-	}
-
-	if latest == nil {
-		if failure != "" {
-			return nil, fmt.Errorf("codex failed: %s", failure)
-		}
-		return nil, errors.New("codex finished without returning image bytes")
-	}
-	return latest, nil
-}
-
-func extractSSEError(raw string) string {
-	var payload struct {
-		Message string `json:"message"`
-		Error   struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err == nil {
-		if payload.Error.Message != "" {
-			return payload.Error.Message
-		}
-		if payload.Message != "" {
-			return payload.Message
-		}
-	}
-	if trimmed := strings.TrimSpace(raw); trimmed != "" {
-		return trimmed
-	}
-	return "unknown codex failure"
 }
 
 func bytesToDataURL(b []byte) string {

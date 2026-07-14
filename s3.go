@@ -375,5 +375,3 @@ func (a *assetStore) deletePrefix(ctx context.Context, prefix string) (int, erro
 	}
 	return deleted, nil
 }
-
-func isDataURL(s string) bool { return strings.HasPrefix(s, "data:") }

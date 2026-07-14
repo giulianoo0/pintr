@@ -1,0 +1,63 @@
+*{box-sizing:border-box}
+body{background:#0f0f10;color:#e7e7e7;font-family:'Geist',system-ui,-apple-system,sans-serif;margin:0;line-height:1.55}
+header{max-width:64rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.logo{display:inline-flex;align-items:center;gap:.5rem;text-decoration:none;color:#fff;font-weight:700;font-size:1.15rem;letter-spacing:-.01em}
+.logo svg{display:block}
+.nav{display:flex;align-items:center;gap:1.1rem;font-size:.9rem}
+.nav a{color:#bdbdbd;text-decoration:none;display:inline-flex;align-items:center}
+.nav a:hover{color:#fff}
+.nav a.btn-sm{background:#2b6cb0;color:#fff;border-radius:6px;padding:.4rem .85rem}
+main{max-width:64rem;margin:0 auto;padding:1.4rem 1.5rem 3rem}
+.hero{margin:1.5rem 0 .5rem}
+.hero-title{font-size:2rem;font-weight:750;letter-spacing:-.02em;margin:0 0 .6rem;line-height:1.15}
+input.dtab{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.tabs{position:relative;display:flex;width:22rem;max-width:100%;background:#141416;border:1px solid #262626;border-radius:9px;padding:3px}
+.tabs .slider{position:absolute;top:3px;left:3px;bottom:3px;width:calc((100% - 6px)/4);background:#2b6cb0;border-radius:6px;transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:0}
+.tabs label{position:relative;z-index:1;flex:1;text-align:center;padding:.34rem .8rem;font-size:.85rem;color:#c9c9c9;cursor:pointer;white-space:nowrap;border-radius:6px}
+.tabs label:hover{color:#fff}
+#t-accounts:checked~header .slider{transform:translateX(0)}
+#t-keys:checked~header .slider{transform:translateX(100%)}
+#t-connect:checked~header .slider{transform:translateX(200%)}
+#t-data:checked~header .slider{transform:translateX(300%)}
+#t-accounts:checked~header label[for=t-accounts],#t-keys:checked~header label[for=t-keys],#t-connect:checked~header label[for=t-connect],#t-data:checked~header label[for=t-data]{color:#fff}
+.tabpane{display:none}
+#t-accounts:checked~main #p-accounts,#t-keys:checked~main #p-keys,#t-connect:checked~main #p-connect,#t-data:checked~main #p-data{display:block}
+.logout{display:inline;margin:0}
+.whoami{color:#888;font-size:.85rem}
+.email{filter:blur(4.5px);transition:filter .15s ease;cursor:default}
+.email:hover{filter:none}
+h2{font-size:1rem;margin:2.2rem 0 .6rem;color:#bdbdbd}
+h3{margin:0 0 .3rem;font-size:.95rem}
+.lead{font-size:1.1rem;color:#d4d4d4;max-width:44rem}
+input,textarea{width:100%;box-sizing:border-box;background:#1a1a1c;color:#e7e7e7;border:1px solid #333;border-radius:6px;padding:.55rem;margin:.35rem 0;font-family:inherit;max-width:26rem}
+textarea{display:block;resize:none}
+button{background:#2b6cb0;color:#fff;border:0;border-radius:6px;padding:.55rem 1.1rem;margin-top:.35rem;cursor:pointer;font-size:.95rem}
+a.btn{display:inline-block;background:#2b6cb0;color:#fff;border-radius:6px;padding:.55rem 1.1rem;text-decoration:none;font-size:.95rem}
+button.link{background:none;color:#63b3ed;padding:0;margin:0;font-size:.85rem}
+button.danger{color:#f87171}
+table{width:100%;border-collapse:collapse;margin:.5rem 0}
+th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid #262626;font-size:.9rem}
+th{color:#888;font-weight:500}
+.err{color:#f87171}.ok{color:#4ade80}
+h2.danger{color:#f87171;margin-top:2.5rem}
+.danger-btn{background:#7f1d1d;color:#fff}
+.muted{color:#888;font-size:.85rem}
+a{color:#63b3ed}
+code{background:#1a1a1c;padding:.15rem .4rem;border-radius:4px;word-break:break-all}
+.cards{display:flex;flex-wrap:wrap;gap:1rem;margin:1.6rem 0}
+.card{flex:1 1 15rem;border:1px solid #262626;border-radius:10px;padding:1.1rem;background:#151517}
+.card p{margin:0;color:#9a9a9a;font-size:.85rem}
+.cta{display:flex;gap:1rem;align-items:center;margin-top:1.5rem}
+.acct{border:1px solid #262626;border-radius:8px;padding:.7rem .85rem;margin:.5rem 0;background:#151517}
+.acct-hd{margin-bottom:.4rem}
+.acct-ft{margin-top:.5rem;font-size:.85rem}
+.fresh{color:#6f6f6f;font-size:.72rem;margin-top:.45rem}
+.limits{display:flex;flex-wrap:wrap;gap:.3rem 1.2rem}
+.lim{display:flex;align-items:center;gap:.5rem;font-size:.8rem;color:#bbb}
+.lim-k{min-width:3.2rem;color:#888;text-transform:uppercase;letter-spacing:.03em;font-size:.72rem}
+.lim-v{min-width:4.5rem}
+.bar{display:inline-block;width:90px;height:6px;background:#2a2a2e;border-radius:3px;overflow:hidden}
+.bar>span{display:block;height:100%}
+.bar>span.ok{background:#4ade80}
+.bar>span.warn{background:#fbbf24}
+.bar>span.low{background:#f87171}

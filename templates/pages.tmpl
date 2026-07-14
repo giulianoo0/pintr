@@ -1,0 +1,75 @@
+{{/* Simple pages: landing, signup, login, generic message, new key, link flow,
+     and the OAuth consent screen. The dashboard lives in dashboard.tmpl. */}}
+
+{{define "index"}}{{template "pagetop" .}}
+<div class="hero">
+  <h1 class="hero-title">Codex image generation, over MCP.</h1>
+  <p class="lead">pintr turns your own ChatGPT login into an image generator any
+  MCP client can call.</p>
+  <div class="cta"><a href="/signup" class="btn">create account</a> <a href="/login">log in</a></div>
+</div>
+<div class="cards">
+  <div class="card"><h3>your own login</h3><p>sign in with ChatGPT through OAuth — no separate API key or billing. link several accounts and pintr spreads generation across them, failing over when one hits a limit.</p></div>
+  <div class="card"><h3>encrypted by default</h3><p>generated images and uploads are encrypted at rest; the keys are returned once and never stored.</p></div>
+  <div class="card"><h3>any mcp client</h3><p>connect Claude Code, OpenCode, PI, or any MCP client over HTTPS.</p></div>
+</div>
+{{template "pagebottom"}}{{end}}
+
+{{define "signup"}}{{template "pagetop" .}}
+<h2>create account</h2>
+<form method="post" action="/signup">
+{{template "csrf" .CSRF}}
+<input type="email" name="email" placeholder="email" autofocus required>
+<input type="password" name="password" placeholder="password (8+ chars)" required>
+<button type="submit">create account</button>
+</form>
+<p><a href="/login">already have an account? log in</a></p>
+{{template "pagebottom"}}{{end}}
+
+{{define "login"}}{{template "pagetop" .}}
+<h2>log in</h2>
+<form method="post" action="/login">
+{{template "csrf" .CSRF}}
+<input type="hidden" name="next" value="{{.Next}}">
+<input type="email" name="email" placeholder="email" autofocus required>
+<input type="password" name="password" placeholder="password" required>
+<button type="submit">log in</button>
+</form>
+<p><a href="/signup">create an account</a></p>
+{{template "pagebottom"}}{{end}}
+
+{{define "message"}}{{template "pagetop" .}}
+{{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+<p><a href="{{.BackHref}}">{{.BackText}}</a></p>
+{{template "pagebottom"}}{{end}}
+
+{{define "newkey"}}{{template "pagetop" .}}
+<h2>new access key</h2>
+<p>copy it now — it is shown only once:</p>
+<p><code>{{.Key}}</code></p>
+<p><a href="/dashboard">back to dashboard</a></p>
+{{template "pagebottom"}}{{end}}
+
+{{define "linkstart"}}{{template "pagetop" .}}
+<h2>link a chatgpt account</h2>
+<p>1. sign in to openai:</p>
+<p><a href="{{.AuthorizeURL}}" target="_blank" rel="noopener" class="btn">sign in with openai</a></p>
+<p>2. your browser then tries to open a <code>localhost:1455</code> page and fails — that is expected. copy the full url from the address bar and paste it here:</p>
+<form method="post" action="/link/finish">
+{{template "csrf" .CSRF}}
+<input type="hidden" name="state" value="{{.State}}">
+<textarea name="callback_url" rows="4" placeholder="http://localhost:1455/auth/callback?code=..." autofocus></textarea>
+<button type="submit">finish linking</button>
+</form>
+{{template "pagebottom"}}{{end}}
+
+{{define "consent"}}{{template "pagetop" .}}
+<h2>authorize mcp client</h2>
+<p>an mcp client wants to connect to pintr as <b>{{.Email}}</b>.</p>
+<form method="post" action="/authorize">
+{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+{{template "csrf" .CSRF}}
+<button type="submit">allow</button>
+</form>
+<p><a href="/dashboard">cancel</a></p>
+{{template "pagebottom"}}{{end}}

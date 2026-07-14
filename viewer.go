@@ -48,8 +48,17 @@ func (h *webHandlers) handleView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", http.DetectContentType(png))
+	// Only ever serve image types on this origin. Generated assets are always
+	// images, but if decrypted bytes were somehow HTML-shaped, sniffing them
+	// into text/html here would be stored XSS on the app domain.
+	contentType := http.DetectContentType(png)
+	if !strings.HasPrefix(contentType, "image/") {
+		contentType = "application/octet-stream"
+		w.Header().Set("Content-Disposition", "attachment; filename=asset")
+	}
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
 	_, _ = w.Write(png)
 }

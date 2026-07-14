@@ -1,0 +1,25 @@
+{{/* Shared building blocks. Every page template starts with "head"; simple
+     pages use "pagetop"/"pagebottom" which add the standard header + <main>. */}}
+
+{{define "head" -}}
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>{{styles}}</style></head><body>
+{{- end}}
+
+{{define "logo"}}<a href="/" class="logo"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5" fill="#2b6cb0"/><circle cx="9" cy="9.5" r="1.9" fill="#fff"/><path d="M4.5 17.5l4.3-4.3 3 3 3.4-3.9 4.3 5z" fill="#fff"/></svg><span>pintr</span></a>{{end}}
+
+{{define "github"}}<a class="gh" href="https://github.com/giulianoo0/pintr" target="_blank" rel="noopener" title="source on github"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 016 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg></a>{{end}}
+
+{{define "nav"}}{{template "github"}}{{if eq . "authed"}}<a href="/dashboard">dashboard</a>{{else}}<a href="/login">log in</a><a href="/signup" class="btn-sm">sign up</a>{{end}}{{end}}
+
+{{define "pagetop"}}{{template "head" .}}
+<header>{{template "logo"}}<nav class="nav">{{template "nav" .Nav}}</nav></header>
+<main>{{end}}
+
+{{define "pagebottom"}}</main></body></html>{{end}}
+
+{{define "csrf"}}<input type="hidden" name="csrf" value="{{.}}">{{end}}
