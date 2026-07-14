@@ -11,25 +11,28 @@ import (
 	"github.com/giulianoo0/pintr/internal/assets"
 	"github.com/giulianoo0/pintr/internal/oauth"
 	"github.com/giulianoo0/pintr/internal/store"
+	"github.com/giulianoo0/pintr/internal/turnstile"
 )
 
 type Handlers struct {
 	store         *store.Store
 	provider      *oauth.Provider
-	assets        *assets.Store      // nil when storage is unconfigured
-	analytics     *analytics.Tracker // nil when analytics is unconfigured
+	assets        *assets.Store       // nil when storage is unconfigured
+	analytics     *analytics.Tracker  // nil when analytics is unconfigured
+	turnstile     *turnstile.Verifier // nil when Turnstile is unconfigured
 	secureCookies bool
 
 	mu      sync.Mutex
 	pending map[string]pendingLink // OpenAI link attempts, keyed by state
 }
 
-func New(st *store.Store, provider *oauth.Provider, assetStore *assets.Store, tracker *analytics.Tracker, secureCookies bool) *Handlers {
+func New(st *store.Store, provider *oauth.Provider, assetStore *assets.Store, tracker *analytics.Tracker, verifier *turnstile.Verifier, secureCookies bool) *Handlers {
 	return &Handlers{
 		store:         st,
 		provider:      provider,
 		assets:        assetStore,
 		analytics:     tracker,
+		turnstile:     verifier,
 		secureCookies: secureCookies,
 		pending:       map[string]pendingLink{},
 	}
@@ -84,6 +87,10 @@ func (h *Handlers) handleSignup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "please reload the form and try again", http.StatusBadRequest)
 		return
 	}
+	if !h.turnstile.Check(r) {
+		renderMessage(w, publicPage("create account"), "verification failed — please try again", "/signup", "try again")
+		return
+	}
 
 	u, err := h.store.CreateUser(r.Context(), r.FormValue("email"), r.FormValue("password"))
 	if err != nil {
@@ -114,6 +121,10 @@ func (h *Handlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.checkFormCSRF(r) {
 		http.Error(w, "please reload the form and try again", http.StatusBadRequest)
+		return
+	}
+	if !h.turnstile.Check(r) {
+		renderMessage(w, publicPage("log in"), "verification failed — please try again", "/login", "try again")
 		return
 	}
 

@@ -85,6 +85,10 @@ func (h *Handlers) handleLinkFinish(w http.ResponseWriter, r *http.Request) {
 	linkErr := func(msg string) {
 		renderMessage(w, authedPage("link chatgpt"), msg, "/dashboard", "back to dashboard")
 	}
+	if !h.turnstile.Check(r) {
+		linkErr("verification failed — start over from the dashboard and complete the check.")
+		return
+	}
 	if !exists || entry.userID != session.User.ID || time.Since(entry.createdAt) > codex.LoginTimeout {
 		linkErr("that link attempt expired or was not yours. start over from the dashboard.")
 		return

@@ -21,6 +21,7 @@
 {{template "csrf" .CSRF}}
 <input type="email" name="email" placeholder="email" autofocus required>
 <input type="password" name="password" placeholder="password (8+ chars)" required>
+{{template "turnstile"}}
 <button type="submit">create account</button>
 </form>
 <p><a href="/login">already have an account? log in</a></p>
@@ -33,6 +34,7 @@
 <input type="hidden" name="next" value="{{.Next}}">
 <input type="email" name="email" placeholder="email" autofocus required>
 <input type="password" name="password" placeholder="password" required>
+{{template "turnstile"}}
 <button type="submit">log in</button>
 </form>
 <p><a href="/signup">create an account</a></p>
@@ -59,6 +61,7 @@
 {{template "csrf" .CSRF}}
 <input type="hidden" name="state" value="{{.State}}">
 <textarea name="callback_url" rows="4" placeholder="http://localhost:1455/auth/callback?code=..." autofocus></textarea>
+{{template "turnstile"}}
 <button type="submit">finish linking</button>
 </form>
 {{template "pagebottom"}}{{end}}
@@ -69,6 +72,7 @@
 <form method="post" action="/authorize">
 {{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
 {{template "csrf" .CSRF}}
+{{template "turnstile"}}
 <button type="submit">allow</button>
 </form>
 <p><a href="/dashboard">cancel</a></p>

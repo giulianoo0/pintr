@@ -49,6 +49,10 @@ type Provider struct {
 	// Analytics counts anonymous events (nil disables it).
 	Analytics *analytics.Tracker
 
+	// VerifyHuman, when set, gates the consent POST behind a captcha check
+	// (Cloudflare Turnstile, wired in app). Nil skips the check.
+	VerifyHuman func(*http.Request) bool
+
 	mu        sync.Mutex
 	usedCodes map[string]int64 // code jti -> expiry unix; makes codes single-use
 }
@@ -302,6 +306,10 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if subtle.ConstantTimeCompare([]byte(query.Get("csrf")), []byte(session.CSRF)) != 1 {
 		http.Error(w, "bad csrf token", http.StatusBadRequest)
+		return
+	}
+	if p.VerifyHuman != nil && !p.VerifyHuman(r) {
+		http.Error(w, "verification failed — go back and complete the check, then click allow again", http.StatusBadRequest)
 		return
 	}
 

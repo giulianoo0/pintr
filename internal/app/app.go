@@ -18,6 +18,7 @@ import (
 	"github.com/giulianoo0/pintr/internal/mcpserver"
 	"github.com/giulianoo0/pintr/internal/oauth"
 	"github.com/giulianoo0/pintr/internal/store"
+	"github.com/giulianoo0/pintr/internal/turnstile"
 	"github.com/giulianoo0/pintr/internal/web"
 )
 
@@ -72,10 +73,15 @@ func ServeHTTP(addr string) {
 	if tracker != nil {
 		log.Print("anonymous analytics enabled (PINTR_PLAUSIBLE_DOMAIN set)")
 	}
+	verifier := turnstile.New()
+	if verifier != nil {
+		log.Print("turnstile enabled on signup/login/link/consent (PINTR_TURNSTILE_* set)")
+	}
 
 	provider := oauth.New(publicURL, st)
 	provider.Analytics = tracker
-	webHandlers := web.New(st, provider, assetStore, tracker, strings.HasPrefix(publicURL, "https://"))
+	provider.VerifyHuman = verifier.Check
+	webHandlers := web.New(st, provider, assetStore, tracker, verifier, strings.HasPrefix(publicURL, "https://"))
 	// The authorize endpoint needs the browser session and the consent page,
 	// both owned by web; injecting them here keeps oauth free of cookies and
 	// templates.

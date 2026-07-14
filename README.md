@@ -181,6 +181,9 @@ the env vars are set:
 
 leave both unset and no analytics code runs and no tag is served.
 
+> **note:** the deployed instance at **pintr.giuli.dev has analytics enabled** —
+> anonymous, aggregate-only counts as described above, nothing identifiable.
+
 ## host it yourself
 
 copy `.env.example` to `.env` and fill it in:
@@ -194,6 +197,14 @@ PINTR_S3_BUCKET=...
 PINTR_S3_ACCESS_KEY_ID=...
 PINTR_S3_SECRET_ACCESS_KEY=...
 PINTR_S3_REGION=auto
+# optional — anonymous analytics (see section above)
+PINTR_PLAUSIBLE_DOMAIN=...
+PINTR_PLAUSIBLE_SCRIPT=...
+# optional — Cloudflare Turnstile captcha on signup/login, the chatgpt link
+# form, and the mcp consent page (token verified server-side). both unset =
+# no captcha anywhere.
+PINTR_TURNSTILE_SITE_KEY=...
+PINTR_TURNSTILE_SECRET_KEY=...
 ```
 
 then:
