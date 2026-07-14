@@ -2,7 +2,7 @@
      logout), the mobile menu, then the panes in <main> — the CSS-only tabs
      (#radio:checked ~ …) need everything after the radios. */}}
 
-{{define "usage"}}<div class="limits">{{if .}}{{range .}}<div class="lim"><span class="lim-k">{{.Label}}</span><span class="bar"><span class="{{.Class}}" style="width:{{.Pct}}%"></span></span><span class="lim-v">{{.Pct}}% left</span></div>{{end}}{{else}}no rate-limit data{{end}}</div>{{end}}
+{{define "usage"}}<div class="limits">{{if .}}{{range .}}<div class="lim"><span class="lim-k">{{.Label}}</span><span class="bar" aria-hidden="true"><span class="{{.Class}}" style="width:{{.Pct}}%"></span></span><span class="lim-v">{{.Pct}}% left</span></div>{{end}}{{else}}no rate-limit data{{end}}</div>{{end}}
 
 {{define "dashboard"}}{{template "head" .}}
 <input class="dtab" type="radio" name="dtab" id="t-accounts" checked>
@@ -10,15 +10,16 @@
 <input class="dtab" type="radio" name="dtab" id="t-connect">
 <input class="dtab" type="radio" name="dtab" id="t-data">
 <header>{{template "logo"}}
-<nav class="tabs"><span class="slider"></span><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label></nav>
+<nav class="tabs" aria-label="dashboard sections"><span class="slider"></span><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label></nav>
 <form method="post" action="/logout" class="logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form>{{template "menubtn"}}</header>
-<div class="menu" id="site-menu"><nav class="menu-items"><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label><a href="/llms.txt">llms.txt</a><form method="post" action="/logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form></nav></div>
+<div class="menu" id="site-menu"><nav class="menu-items" aria-label="mobile"><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label><a href="/llms.txt">llms.txt</a><form method="post" action="/logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form></nav></div>
 <main>
+<h1 style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0">pintr dashboard</h1>
 <section class="tabpane" id="p-accounts">
 {{if not .Accounts}}<p class="err">no chatgpt account linked yet. image generation will fail until you add one.</p>{{end}}
 {{range .Accounts}}<div class="acct"><div class="acct-hd"><b>{{.Email}}</b> <span class="muted">{{.Plan}}{{if .IsDefault}} <span class="ok">· default</span>{{end}}</span></div>
 {{- if .HasUsage}}{{template "usage" .Windows}}<div class="fresh" data-age="{{.FreshAge}}" data-left="{{.FreshLeft}}"></div>{{else}}<div class="limits">limits unavailable</div>{{end -}}
-<div class="acct-ft">{{if not .IsDefault}}<form method="post" action="/accounts/default" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link">make default</button></form> · {{end}}<form method="post" action="/accounts/remove" style="display:inline" data-confirm="remove this account?">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger">remove</button></form></div></div>
+<div class="acct-ft">{{if not .IsDefault}}<form method="post" action="/accounts/default" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link" aria-label="make {{.Email}} the default account">make default</button></form> · {{end}}<form method="post" action="/accounts/remove" style="display:inline" data-confirm="remove this account?">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger" aria-label="remove account {{.Email}}">remove</button></form></div></div>
 {{end}}
 <form method="post" action="/link/start" style="display:inline">{{template "csrf" .CSRF}}<button type="submit">link a chatgpt account</button></form>
 {{if .Accounts}} <form method="post" action="/usage/refresh" style="display:inline">{{template "csrf" .CSRF}}<button type="submit" class="link">refresh limits</button></form>
@@ -26,12 +27,14 @@
 </section>
 <section class="tabpane" id="p-keys">
 <p class="muted">access keys authenticate scripts/clients with <code>Authorization: Bearer &lt;key&gt;</code>. mcp clients that logged in through the browser oauth flow show up as "oauth" sessions — revoke any of them here.</p>
-{{if or .Keys .OAuthSessions}}<div class="table-wrap"><table><tr><th>key</th><th>name</th><th>created</th><th></th></tr>
-{{range .Keys}}<tr><td><code>{{.Prefix}}…</code></td><td>{{.Name}}</td><td>{{shortDate .CreatedAt}}</td><td><form method="post" action="/keys/remove" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger">revoke</button></form></td></tr>
-{{end}}{{range .OAuthSessions}}<tr><td><span class="muted">oauth session</span></td><td>oauth</td><td>{{shortDate .CreatedAt}}</td><td><form method="post" action="/sessions/remove" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger">revoke</button></form></td></tr>
+{{if or .Keys .OAuthSessions}}<div class="table-wrap"><table><tr><th scope="col">key</th><th scope="col">name</th><th scope="col">created</th><th scope="col">actions</th></tr>
+{{range .Keys}}<tr><td><code>{{.Prefix}}…</code></td><td>{{.Name}}</td><td>{{shortDate .CreatedAt}}</td><td><form method="post" action="/keys/remove" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger" aria-label="revoke access key {{.Prefix}}">revoke</button></form></td></tr>
+{{end}}{{range .OAuthSessions}}<tr><td><span class="muted">oauth session</span></td><td>oauth</td><td>{{shortDate .CreatedAt}}</td><td><form method="post" action="/sessions/remove" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger" aria-label="revoke oauth session">revoke</button></form></td></tr>
 {{end}}</table></div>{{end}}
-<form method="post" action="/keys/create">{{template "csrf" .CSRF}}<input type="text" name="name" placeholder="key name (optional)"><button type="submit">new access key</button></form>
-<p><form method="post" action="/tokens/revoke" data-confirm="sign out all mcp clients? they will have to authorize again.">{{template "csrf" .CSRF}}<button type="submit" class="link danger">revoke all mcp tokens</button></form></p>
+<div class="keys-actions">
+<form method="post" action="/keys/create" class="keyform">{{template "csrf" .CSRF}}<input type="text" name="name" placeholder="key name (optional)"><button type="submit">new access key</button></form>
+<form method="post" action="/tokens/revoke" data-confirm="sign out all mcp clients? they will have to authorize again.">{{template "csrf" .CSRF}}<button type="submit" class="link danger">revoke all mcp tokens</button></form>
+</div>
 </section>
 <section class="tabpane" id="p-connect">
 <p>add pintr to your mcp client by url: <code>{{.Resource}}</code>. on first connect your browser opens; you log in to pintr and click allow, and the client keeps its own token (auto-refreshed). prefer a static key? create one in the keys tab and pass it as an <code>Authorization: Bearer pintr_YOURKEY</code> header.</p>
