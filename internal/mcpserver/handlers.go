@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/giulianoo0/pintr/internal/analytics"
 	"github.com/giulianoo0/pintr/internal/assets"
 	"github.com/giulianoo0/pintr/internal/codex"
 	"github.com/giulianoo0/pintr/internal/oauth"
@@ -126,12 +127,13 @@ func viewURL(publicURL, objectKey, keyB64 string) string {
 	return publicURL + "/view?o=" + url.QueryEscape(objectKey) + "&k=" + url.QueryEscape(keyB64)
 }
 
-func HostedUsage(st *store.Store) UsageFunc {
+func HostedUsage(st *store.Store, tracker *analytics.Tracker) UsageFunc {
 	return func(ctx context.Context, _ getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
 		u, ok := oauth.UserFromContext(ctx)
 		if !ok {
 			return nil, usageResult{}, errors.New("unauthenticated")
 		}
+		tracker.Event("get_usage")
 		accounts, err := codex.UserAccounts(ctx, st, u.ID)
 		if err != nil {
 			return nil, usageResult{}, err
@@ -154,7 +156,7 @@ func HostedUsage(st *store.Store) UsageFunc {
 // encrypts the PNG under a one-time key, uploads the ciphertext, and returns
 // a presigned download URL plus the key. It never touches the local
 // filesystem or a caller-chosen path.
-func HostedGenerate(st *store.Store, assetStore *assets.Store, publicURL string) GenerateFunc {
+func HostedGenerate(st *store.Store, assetStore *assets.Store, tracker *analytics.Tracker, publicURL string) GenerateFunc {
 	return func(ctx context.Context, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 		u, ok := oauth.UserFromContext(ctx)
 		if !ok {
@@ -179,6 +181,7 @@ func HostedGenerate(st *store.Store, assetStore *assets.Store, publicURL string)
 		if err != nil {
 			return nil, generateImageResult{}, fmt.Errorf("storing image: %w", err)
 		}
+		tracker.Event("generate_image")
 
 		result := generateImageResult{
 			AssetURL:          stored.URL,

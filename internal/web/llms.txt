@@ -166,6 +166,9 @@ Dashboard (browser, session cookie + CSRF):
 - The encryption protects data at rest (bucket operator, backups, a stolen DB),
   not against a compromised pintr process — pintr necessarily sees each image in
   memory at creation time.
+- Optional anonymous analytics (Plausible): when enabled by the operator, the
+  server counts events like signups and generations. An event is only a name —
+  no user id, IP, prompt, or image data is ever sent.
 
 ## Self-hosting
 

@@ -111,5 +111,6 @@ func (h *Handlers) handleLinkFinish(w http.ResponseWriter, r *http.Request) {
 		linkErr("could not save the account. please try again.")
 		return
 	}
+	h.analytics.Event("chatgpt_linked")
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }

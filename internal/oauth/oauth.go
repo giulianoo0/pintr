@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/giulianoo0/pintr/internal/analytics"
 	"github.com/giulianoo0/pintr/internal/random"
 	"github.com/giulianoo0/pintr/internal/store"
 )
@@ -44,6 +45,9 @@ type Provider struct {
 	// page, both owned by web.
 	LookupSession func(*http.Request) (store.SessionInfo, bool)
 	RenderConsent func(http.ResponseWriter, store.SessionInfo, url.Values)
+
+	// Analytics counts anonymous events (nil disables it).
+	Analytics *analytics.Tracker
 
 	mu        sync.Mutex
 	usedCodes map[string]int64 // code jti -> expiry unix; makes codes single-use

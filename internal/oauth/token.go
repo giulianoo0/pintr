@@ -74,6 +74,7 @@ func (p *Provider) tokenFromCode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	p.Analytics.Event("mcp_client_authorized")
 	p.issueTokens(w, code.UserID, sid, code.Resource, code.Epoch)
 }
 

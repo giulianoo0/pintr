@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/giulianoo0/pintr/internal/analytics"
 	"github.com/giulianoo0/pintr/internal/assets"
 	"github.com/giulianoo0/pintr/internal/codex"
 	"github.com/giulianoo0/pintr/internal/mcpserver"
@@ -67,16 +68,22 @@ func ServeHTTP(addr string) {
 		assetStore.StartJanitor(context.Background())
 	}
 
+	tracker := analytics.New()
+	if tracker != nil {
+		log.Print("anonymous analytics enabled (PINTR_PLAUSIBLE_DOMAIN set)")
+	}
+
 	provider := oauth.New(publicURL, st)
-	webHandlers := web.New(st, provider, assetStore, strings.HasPrefix(publicURL, "https://"))
+	provider.Analytics = tracker
+	webHandlers := web.New(st, provider, assetStore, tracker, strings.HasPrefix(publicURL, "https://"))
 	// The authorize endpoint needs the browser session and the consent page,
 	// both owned by web; injecting them here keeps oauth free of cookies and
 	// templates.
 	provider.LookupSession = webHandlers.SessionFromRequest
 	provider.RenderConsent = web.RenderConsent
 
-	hostedGenerate := mcpserver.HostedGenerate(st, assetStore, publicURL)
-	hostedUsage := mcpserver.HostedUsage(st)
+	hostedGenerate := mcpserver.HostedGenerate(st, assetStore, tracker, publicURL)
+	hostedUsage := mcpserver.HostedUsage(st, tracker)
 
 	// Stateless: getServer runs per request, so the MCP server is always bound
 	// to the current request's authenticated user (no cross-user session reuse).

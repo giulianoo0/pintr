@@ -43,7 +43,7 @@ flowchart TD
 you need go 1.26 or newer.
 
 ```
-go build -o pintr .
+go build -o pintr ./cmd/pintr
 ```
 
 ## stdio mode (local, single user)
@@ -162,6 +162,24 @@ what pintr does **not** claim to protect against: pintr is the party that runs
 the generation, so it necessarily sees each png in memory at creation time and
 mints the key. the encryption protects data **at rest** (the bucket operator,
 backups, a stolen db) — not against a compromised pintr process itself.
+
+## anonymous analytics (optional)
+
+the hosted server can count product events in [Plausible](https://plausible.io)
+(privacy-friendly, no cookies). it is **off by default** and only turns on when
+the env vars are set:
+
+- `PINTR_PLAUSIBLE_DOMAIN` — enables **server-side** counters through the
+  [Plausible Events API](https://plausible.io/docs/events-api): `signup`,
+  `chatgpt_linked`, `generate_image`, `get_usage`, `image_view`,
+  `reference_upload`, and `mcp_client_authorized`. each event is **just a
+  name** — no user id, email, IP forwarding, prompt, or image data is ever
+  sent, so the numbers are pure aggregate counts.
+- `PINTR_PLAUSIBLE_SCRIPT` — the script url from your Plausible snippet; when
+  set, dashboard pages include the page-view script tag (served with a CSP
+  that allows exactly that script and nothing else).
+
+leave both unset and no analytics code runs and no tag is served.
 
 ## host it yourself
 

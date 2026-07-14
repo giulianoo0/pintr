@@ -47,6 +47,7 @@ func (h *Handlers) handleView(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 		w.Header().Set("Content-Disposition", "attachment; filename=asset")
 	}
+	h.analytics.Event("image_view")
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

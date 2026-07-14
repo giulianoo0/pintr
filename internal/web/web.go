@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/giulianoo0/pintr/internal/analytics"
 	"github.com/giulianoo0/pintr/internal/assets"
 	"github.com/giulianoo0/pintr/internal/oauth"
 	"github.com/giulianoo0/pintr/internal/store"
@@ -15,18 +16,20 @@ import (
 type Handlers struct {
 	store         *store.Store
 	provider      *oauth.Provider
-	assets        *assets.Store // nil when storage is unconfigured
+	assets        *assets.Store      // nil when storage is unconfigured
+	analytics     *analytics.Tracker // nil when analytics is unconfigured
 	secureCookies bool
 
 	mu      sync.Mutex
 	pending map[string]pendingLink // OpenAI link attempts, keyed by state
 }
 
-func New(st *store.Store, provider *oauth.Provider, assetStore *assets.Store, secureCookies bool) *Handlers {
+func New(st *store.Store, provider *oauth.Provider, assetStore *assets.Store, tracker *analytics.Tracker, secureCookies bool) *Handlers {
 	return &Handlers{
 		store:         st,
 		provider:      provider,
 		assets:        assetStore,
+		analytics:     tracker,
 		secureCookies: secureCookies,
 		pending:       map[string]pendingLink{},
 	}
@@ -91,6 +94,7 @@ func (h *Handlers) handleSignup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	h.analytics.Event("signup")
 	// No access key is minted at signup: most people connect through the MCP
 	// OAuth flow, and can create a key from the dashboard if they want one.
 	http.Redirect(w, r, "/dashboard", http.StatusFound)

@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 
 	"github.com/giulianoo0/pintr/internal/store"
 )
@@ -23,9 +25,19 @@ var templateFS embed.FS
 //go:embed templates/styles.css
 var stylesCSS string
 
+// plausibleScriptURL enables the optional, privacy-friendly Plausible page
+// analytics: when PINTR_PLAUSIBLE_SCRIPT is set (the full script URL from the
+// Plausible snippet), every page includes the script tag plus the static init
+// stub below; when unset, nothing analytics-related is served.
+var plausibleScriptURL = strings.TrimSpace(os.Getenv("PINTR_PLAUSIBLE_SCRIPT"))
+
+const plausibleInit = `window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()`
+
 var pageTemplates = template.Must(template.New("").Funcs(template.FuncMap{
-	"styles":    func() template.CSS { return template.CSS(stylesCSS) },
-	"shortDate": shortDate,
+	"styles":          func() template.CSS { return template.CSS(stylesCSS) },
+	"shortDate":       shortDate,
+	"plausibleScript": func() template.URL { return template.URL(plausibleScriptURL) },
+	"plausibleInit":   func() template.JS { return plausibleInit },
 }).ParseFS(templateFS, "templates/*.tmpl"))
 
 // dashScript is the dashboard's only JavaScript: confirmation prompts for
@@ -58,13 +70,27 @@ const dashScript = `(function(){
 })();`
 
 // pageCSP locks pages down to what they actually use: inline styles + Google
-// Fonts, and only the dashboard script (allowed by hash — inline handlers are
-// blocked, which is why forms use data-confirm instead of onsubmit).
+// Fonts, and only known scripts — the dashboard script and (when configured)
+// the Plausible script + its init stub. Inline scripts are allowed by hash
+// only, so inline handlers are blocked; forms use data-confirm instead of
+// onsubmit.
 var pageCSP = func() string {
-	sum := sha256.Sum256([]byte(dashScript))
-	return "default-src 'none'; script-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'; " +
+	hash := func(s string) string {
+		sum := sha256.Sum256([]byte(s))
+		return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+	}
+	scriptSrc := hash(dashScript)
+	connectSrc := ""
+	if plausibleScriptURL != "" {
+		if u, err := url.Parse(plausibleScriptURL); err == nil && u.Scheme == "https" {
+			origin := u.Scheme + "://" + u.Host
+			scriptSrc += " " + origin + " " + hash(plausibleInit)
+			connectSrc = "connect-src " + origin + "; "
+		}
+	}
+	return "default-src 'none'; script-src " + scriptSrc + "; " +
 		"style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
-		"img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+		"img-src 'self' data:; " + connectSrc + "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 }()
 
 func securePageHeaders(w http.ResponseWriter) {
