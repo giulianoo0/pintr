@@ -53,7 +53,7 @@ func serveHTTP(addr string) {
 			if _, ok := userFromContext(r.Context()); !ok {
 				return nil
 			}
-			return newMCPServer(hosted, hostedUsageFn)
+			return newMCPServer(true, hosted, hostedUsageFn)
 		},
 		// DisableLocalhostProtection: requests arrive from nginx on 127.0.0.1
 		// with Host pintr.giuli.dev, which the SDK's DNS-rebinding guard would

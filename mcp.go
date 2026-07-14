@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -29,22 +30,64 @@ const (
 type generateHandler func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error)
 type usageHandler func(context.Context, getUsageArgs) (*mcp.CallToolResult, usageResult, error)
 
-func newMCPServer(generate generateHandler, usage usageHandler) *mcp.Server {
+// The tool description and the reference_images schema are mode-specific on
+// purpose: when both modes shared one description that documented /upload,
+// agents on the LOCAL server kept uploading instead of passing file paths.
+// Each mode now only advertises the one reference mechanism that works there.
+
+const generateDescriptionCommon = "Generate an image with the Codex image model (GPT Image, gpt-5.6-terra). " +
+	"Generation can take up to 420 seconds — do NOT treat a long-running call as stuck; the server " +
+	"streams progress notifications and only errors out after 10 minutes. " +
+	"The result also includes the account's remaining rate limits under usage. "
+
+const generateDescriptionStdio = generateDescriptionCommon +
+	"ALWAYS look at the image after generating: read saved_path and view it, so you can confirm it matches " +
+	"the request before continuing. " +
+	"For reference_images, pass LOCAL FILE PATHS — this server runs on your machine and reads them straight " +
+	"off disk. Never base64-encode, inline, or upload reference images; a plain path is all it takes."
+
+const generateDescriptionHosted = generateDescriptionCommon +
+	"ALWAYS look at the image after generating: open decrypted_asset_url from the result and view it, so you " +
+	"can confirm it matches the request before continuing. decrypted_asset_url returns the decrypted PNG " +
+	"(image/png) directly, no decryption needed on your side. (asset_url is the raw encrypted ciphertext and " +
+	"decryption_key is its key, if you'd rather fetch and decrypt it yourself.) " +
+	"Stored images auto-delete 24 hours after generation — download the PNG if you need it longer. " +
+	"For reference_images, upload the raw bytes to /upload first and pass the returned ref_ handle " +
+	"(see the reference_images field); this server is remote and cannot read files off your machine."
+
+const refsDescriptionStdio = "optional reference images to anchor a character or style. Pass LOCAL FILE " +
+	"PATHS (png/jpeg/webp/gif) — this server runs alongside you and reads them directly off disk. " +
+	"Do NOT base64-encode, inline, or pass data: URLs (they are rejected), and do not upload anything."
+
+const refsDescriptionHosted = "optional reference images to anchor a character or style, passed as ref_ " +
+	"upload handles. This server is remote: it cannot read files off your machine, so local paths do not " +
+	"work here. Do NOT base64-encode, inline, or pass data: URLs — that bloats context and is rejected. " +
+	"Instead POST the RAW image bytes to the /upload endpoint (e.g. https://pintr.giuli.dev/upload) with " +
+	"your bearer token, e.g.: curl -s -X POST https://pintr.giuli.dev/upload -H \"Authorization: Bearer " +
+	"<token-or-pintr_key>\" --data-binary @image.png ; it returns {\"ref\":\"ref_...\"}. Pass those ref_... " +
+	"handles here. Keep each upload under ~10 MB (Cloudflare caps request bodies) — downscale large " +
+	"references; there is no chunked upload. Uploads are stored encrypted and auto-delete after 1 hour, so " +
+	"the same ref_ handle can be reused across multiple generate_image calls within that window — upload " +
+	"once per reference, reuse the handle."
+
+// generateImageTool builds the generate_image tool definition for one mode,
+// overriding the reference_images schema description with the mode's text.
+func generateImageTool(hosted bool) *mcp.Tool {
+	schema, err := jsonschema.For[generateImageArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("generate_image schema: %v", err))
+	}
+	description, refsDescription := generateDescriptionStdio, refsDescriptionStdio
+	if hosted {
+		description, refsDescription = generateDescriptionHosted, refsDescriptionHosted
+	}
+	schema.Properties["reference_images"].Description = refsDescription
+	return &mcp.Tool{Name: "generate_image", Description: description, InputSchema: schema}
+}
+
+func newMCPServer(hosted bool, generate generateHandler, usage usageHandler) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "pintr", Version: serverVersion}, nil)
-	mcp.AddTool(server, &mcp.Tool{
-		Name: "generate_image",
-		Description: "Generate an image with the Codex image model (GPT Image, gpt-5.6-terra). " +
-			"Generation can take up to 420 seconds — do NOT treat a long-running call as stuck; the server " +
-			"streams progress notifications and only errors out after 10 minutes. " +
-			"ALWAYS look at the image after generating: open decrypted_asset_url from the result (hosted) or read " +
-			"saved_path (local stdio) and view it, so you can confirm it matches the request before continuing. " +
-			"decrypted_asset_url returns the decrypted PNG (image/png) directly, no decryption needed on your side. " +
-			"(asset_url is the raw encrypted ciphertext and decryption_key is its key, if you'd rather fetch and " +
-			"decrypt it yourself.) The result also includes the account's remaining rate limits under usage. " +
-			"For reference_images: in local stdio mode, pass a local file path — the server reads it straight off disk. " +
-			"Do NOT base64-encode or inline images (data: URLs are rejected); only on the hosted server, as a last " +
-			"resort, upload the raw bytes to /upload and pass the returned ref_ handle (see the reference_images field).",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
+	mcp.AddTool(server, generateImageTool(hosted), func(ctx context.Context, req *mcp.CallToolRequest, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 		ctx, cancel := context.WithTimeout(ctx, generationTimeout)
 		defer cancel()
 		stopProgress := startProgress(ctx, req)

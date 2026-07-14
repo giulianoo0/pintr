@@ -36,10 +36,12 @@ var cookiePrimeURLs = []string{"https://chatgpt.com/", "https://chat.openai.com/
 
 // generateImageArgs is the MCP tool input. There is deliberately no model field
 // (fixed server-side) and no output path (the client never chooses where the
-// server writes) — delivery is decided by the server per mode.
+// server writes) — delivery is decided by the server per mode. The
+// reference_images description is mode-specific and set in generateImageTool
+// (mcp.go); the tag below is only a fallback.
 type generateImageArgs struct {
 	Prompt          string   `json:"prompt" jsonschema:"the full image prompt to render"`
-	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style. PREFERRED: in local stdio mode, pass a local file PATH — the server runs alongside you and reads the image straight off disk, no upload needed. Do NOT base64-encode, inline, or pass data: URLs — that bloats context and is rejected. Uploading is a LAST RESORT, needed only on the hosted server (which cannot read your files): POST the RAW image bytes to its /upload endpoint (e.g. https://pintr.giuli.dev/upload) with your bearer token, e.g.: curl -s -X POST https://pintr.giuli.dev/upload -H \"Authorization: Bearer <token-or-pintr_key>\" --data-binary @image.png ; it returns {\"ref\":\"ref_...\"}. Pass those ref_... handles here. Keep each upload under ~10 MB (the hosted server is behind Cloudflare, which caps request bodies at ~10 MB) — downscale large reference images; there is no chunked upload. Uploads are stored encrypted and auto-delete after 1 hour, so the same ref_ handle can be reused across multiple generate_image calls within that window — upload once per reference, reuse the handle."`
+	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style"`
 }
 
 type generateImageResult struct {

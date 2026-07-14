@@ -53,7 +53,7 @@ func main() {
 	if err := ensureLoggedIn(ctx, fileStore); err != nil {
 		log.Fatalf("auth: %v", err)
 	}
-	server := newMCPServer(stdioGenerate(fileStore), stdioUsage(fileStore))
+	server := newMCPServer(false, stdioGenerate(fileStore), stdioUsage(fileStore))
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("stdio server: %v", err)
 	}
