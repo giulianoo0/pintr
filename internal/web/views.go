@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strings"
 
+	"github.com/giulianoo0/pintr/internal/mcpserver"
 	"github.com/giulianoo0/pintr/internal/store"
 	"github.com/giulianoo0/pintr/internal/turnstile"
 )
@@ -38,6 +40,34 @@ const plausibleInit = `window.plausible=window.plausible||function(){(plausible.
 // New before any page renders.
 var publicBase string
 
+// buildCommit is the git revision go build stamps into the binary; empty when
+// built without vcs info (e.g. go test), in which case the footer shows only
+// the version.
+var buildCommit = func() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" {
+				return setting.Value
+			}
+		}
+	}
+	return ""
+}()
+
+func commitShort() string {
+	if len(buildCommit) > 7 {
+		return buildCommit[:7]
+	}
+	return buildCommit
+}
+
+func commitURL() string {
+	if buildCommit == "" {
+		return ""
+	}
+	return "https://github.com/giulianoo0/pintr/commit/" + buildCommit
+}
+
 var pageTemplates = template.Must(template.New("").Funcs(template.FuncMap{
 	"styles":           func() template.CSS { return template.CSS(stylesCSS) },
 	"script":           func() template.JS { return siteScript },
@@ -46,6 +76,9 @@ var pageTemplates = template.Must(template.New("").Funcs(template.FuncMap{
 	"plausibleInit":    func() template.JS { return plausibleInit },
 	"turnstileSiteKey": turnstile.SiteKey,
 	"absURL":           func(path string) string { return publicBase + path },
+	"version":          func() string { return mcpserver.Version },
+	"commitShort":      commitShort,
+	"commitURL":        commitURL,
 }).ParseFS(templateFS, "templates/*.tmpl"))
 
 // siteScript is the one script every page carries: confirmation prompts for

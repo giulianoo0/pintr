@@ -2,8 +2,11 @@ package web
 
 import (
 	"bytes"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/giulianoo0/pintr/internal/mcpserver"
 )
 
 // Render the dashboard with asset storage configured — that branch can't be
@@ -36,5 +39,46 @@ func TestDashboardTemplateWithAssets(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Errorf("dashboard html missing %q", want)
 		}
+	}
+}
+
+// The footer always shows the version; the commit link only exists when the
+// binary carries vcs info (go test builds don't, so exercise both by forcing
+// a commit).
+func TestFooterVersionAndCommit(t *testing.T) {
+	saved := buildCommit
+	defer func() { buildCommit = saved }()
+	buildCommit = "0123456789abcdef0123456789abcdef01234567"
+
+	var buf bytes.Buffer
+	if err := pageTemplates.ExecuteTemplate(&buf, "footer", nil); err != nil {
+		t.Fatalf("render footer: %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		"v" + mcpserver.Version,
+		`href="https://github.com/giulianoo0/pintr/commit/0123456789abcdef0123456789abcdef01234567"`,
+		">0123456<",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("footer html missing %q", want)
+		}
+	}
+
+	buildCommit = ""
+	buf.Reset()
+	if err := pageTemplates.ExecuteTemplate(&buf, "footer", nil); err != nil {
+		t.Fatalf("render footer without commit: %v", err)
+	}
+	if strings.Contains(buf.String(), "/commit/") {
+		t.Errorf("footer must omit the commit link without vcs info, got: %s", buf.String())
+	}
+}
+
+func TestDocsRedirect(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handleDocs(rec, httptest.NewRequest("GET", "/docs", nil))
+	if rec.Code != 302 || rec.Header().Get("Location") != "/llms.txt" {
+		t.Errorf("want 302 → /llms.txt, got %d → %q", rec.Code, rec.Header().Get("Location"))
 	}
 }

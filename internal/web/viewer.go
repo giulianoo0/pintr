@@ -16,6 +16,11 @@ func handleLLMs(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(llmsTxt))
 }
 
+// handleDocs points the guessable /docs at the canonical llms.txt.
+func handleDocs(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/llms.txt", http.StatusFound)
+}
+
 // handleView fetches the ciphertext from storage, decrypts it server-side with
 // the key from the query, and writes the raw image — nothing else, so opening
 // the link shows the image in a browser or hands an agent usable bytes.

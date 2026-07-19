@@ -62,6 +62,7 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/upload", h.handleUpload)
 	mux.HandleFunc("/view", h.handleView)
 	mux.HandleFunc("/llms.txt", handleLLMs)
+	mux.HandleFunc("/docs", handleDocs)
 	mux.Handle("/static/", staticHandler())
 	mux.HandleFunc("/favicon.ico", handleFavicon)
 	mux.HandleFunc("/robots.txt", handleRobots)
