@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -194,12 +195,35 @@ func HostedGenerate(st *store.Store, assetStore *assets.Store, tracker *analytic
 			SizeBytes:         len(img.PNG),
 			Usage:             img.Usage,
 		}
-		note := fmt.Sprintf(
-			"Image generated (%d bytes). To view it, open decrypted_asset_url — it returns the decrypted "+
-				"PNG directly (image/png), decrypted server-side. asset_url is the raw encrypted ciphertext; "+
-				"decryption_key is the AES-256-GCM key, returned only here and never stored. The stored image "+
-				"auto-deletes in 24 hours — download the PNG now if you need it longer.", len(img.PNG))
-		callResult := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: note}}}
+		callResult, err := hostedCallResult(result)
+		if err != nil {
+			return nil, generateImageResult{}, err
+		}
 		return callResult, result, nil
 	}
+}
+
+// hostedCallResult builds the unstructured content for a hosted generation.
+// MCP clients disagree on which channel reaches the model: some forward only
+// structuredContent (Claude Code, VS Code, Codex), others read only the
+// content blocks (opencode, Grok Build, most adapters). The result must
+// therefore appear in BOTH — the SDK fills structuredContent from the typed
+// result, and per the spec's backwards-compatibility rule the same serialized
+// JSON goes here as its own TextContent block (kept pure JSON, no prose mixed
+// in, so content-only clients can parse it). Returning a non-nil result
+// suppresses the SDK's own JSON fallback, so it must be included by hand.
+func hostedCallResult(result generateImageResult) (*mcp.CallToolResult, error) {
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("encoding result: %w", err)
+	}
+	note := fmt.Sprintf(
+		"Image generated (%d bytes). To view it, open decrypted_asset_url — it returns the decrypted "+
+			"PNG directly (image/png), decrypted server-side. asset_url is the raw encrypted ciphertext; "+
+			"decryption_key is the AES-256-GCM key, returned only here and never stored. The stored image "+
+			"auto-deletes in 24 hours — download the PNG now if you need it longer.", result.SizeBytes)
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		&mcp.TextContent{Text: note},
+		&mcp.TextContent{Text: string(resultJSON)},
+	}}, nil
 }
