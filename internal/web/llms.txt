@@ -171,9 +171,11 @@ Generate an image. Input:
 - **Claude.ai / Claude Desktop:** attach the image, then call
   `request_reference_upload` with its metadata. Claude's code-execution sandbox
   receives a signed URL and `PUT`s the attachment bytes to pintr over HTTPS.
-  Once, add `https://pintr.giuli.dev` under **Settings → Capabilities → Code
-  execution and file creation → Additional allowed domains** so the sandbox can
-  reach pintr. The URL expires after five minutes; its response contains a
+  Once, add the exact origin (scheme and host) in the returned `upload_url`
+  under **Settings → Capabilities → Code execution and file creation →
+  Additional allowed domains** so the sandbox can reach pintr. For the default
+  hosted service, the origin is `https://pintr.giuli.dev`. The URL expires after
+  five minutes; its response contains a
   `ref_` token, which Claude passes to `generate_image.reference_images` for up
   to one hour. The image bytes go from the sandbox to pintr over HTTPS, never
   through model-authored JSON.

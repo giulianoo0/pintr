@@ -127,9 +127,11 @@ you are in:
 - **Claude.ai / Claude Desktop:** attach the image, then let Claude call
   `request_reference_upload`. It obtains a one-time URL and uses its
   code-execution sandbox to `PUT` the image bytes to pintr over HTTPS. Before
-  the first upload, allow `https://pintr.giuli.dev` in **Settings → Capabilities
-  → Code execution and file creation → Additional allowed domains**. The upload
-  response returns a `ref_` token; Claude passes that token in
+  the first upload, allow the exact origin (scheme and host) in the returned
+  `upload_url` under **Settings → Capabilities → Code execution and file
+  creation → Additional allowed domains**. For the default hosted service, that
+  origin is `https://pintr.giuli.dev`. The upload response returns a `ref_`
+  token; Claude passes that token in
   `generate_image.reference_images` and can reuse it for one hour. The bytes
   travel from Claude's sandbox to the server over HTTPS, never through
   model-authored JSON.
