@@ -91,16 +91,15 @@ type referenceDownloader interface {
 // appended in argument order; their bytes are never persisted.
 func resolveHostedReferences(ctx context.Context, st *assets.Store, userID string, refs []string, files []referenceImageFile, downloader referenceDownloader) ([]string, error) {
 	out := make([]string, 0, len(refs)+len(files))
-	for _, ref := range refs {
+	for i, ref := range refs {
 		ref = strings.TrimSpace(ref)
 		if !strings.HasPrefix(ref, "ref_") {
-			return nil, fmt.Errorf("reference image %q is not an uploaded handle — the hosted server can't read local files or accept inline base64/data: URLs; upload the raw bytes to /upload and pass the returned ref_ handle", truncate(ref, 48))
+			return nil, fmt.Errorf("reference image %d is not an uploaded handle — the hosted server can't read local files or accept inline base64/data: URLs; upload the raw bytes to /upload and pass the returned ref_ handle", i+1)
 		}
 		img, err := st.FetchUpload(ctx, userID, ref)
 		if err != nil {
-			// Log the id only — the part after the dot is the decryption key.
-			log.Printf("[generate_image] reference %s failed: %v", refID(ref), err)
-			return nil, fmt.Errorf("reference %s: %w (uploads expire 1 hour after upload — re-upload to /upload and retry with the new handle)", refID(ref), err)
+			log.Printf("[generate_image] reference image %d failed", i+1)
+			return nil, fmt.Errorf("reference image %d could not be resolved (uploads expire 1 hour after upload — re-upload to /upload and retry with the new handle)", i+1)
 		}
 		out = append(out, codex.DataURL(img))
 	}
@@ -121,22 +120,6 @@ func resolveHostedReferences(ctx context.Context, st *assets.Store, userID strin
 		out = append(out, codex.DataURL(img))
 	}
 	return out, nil
-}
-
-// refID returns the public id part of a ref_ handle, safe for logs and error
-// messages (the segment after the dot is the decryption key).
-func refID(handle string) string {
-	if id, _, ok := strings.Cut(handle, "."); ok {
-		return id
-	}
-	return handle
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
 }
 
 // viewURL builds the decrypted-view link served by web's /view handler: the

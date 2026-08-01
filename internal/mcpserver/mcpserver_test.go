@@ -1,15 +1,19 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/giulianoo0/pintr/internal/assets"
 )
 
 type fakeReferenceDownloader struct {
@@ -205,6 +209,57 @@ func TestResolveHostedChatGPTFiles(t *testing.T) {
 			t.Fatalf("error leaks signed URL: %v", err)
 		}
 	})
+}
+
+func TestResolveHostedReferenceErrorsHideInputs(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		ref    string
+		marker string
+	}{
+		{
+			name:   "data URL",
+			ref:    "data:image/png;base64,LEAKED_IMAGE_BYTES_123",
+			marker: "LEAKED_IMAGE_BYTES",
+		},
+		{
+			name:   "bearer token",
+			ref:    "Bearer LEAKED_BEARER_TOKEN_123",
+			marker: "LEAKED_BEARER_TOKEN",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolveHostedReferences(context.Background(), &assets.Store{}, "user-1", []string{tt.ref}, nil, nil)
+			if err == nil {
+				t.Fatal("expected rejected reference error")
+			}
+			if strings.Contains(err.Error(), tt.ref) || strings.Contains(err.Error(), tt.marker) {
+				t.Fatalf("error leaks rejected reference input: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveHostedMalformedReferenceDoesNotLeakToErrorOrLog(t *testing.T) {
+	const (
+		ref    = "ref_LEAKED_REFERENCE_SECRET_123"
+		marker = "LEAKED_REFERENCE_SECRET"
+	)
+	var logs bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(originalWriter) })
+
+	_, err := resolveHostedReferences(context.Background(), &assets.Store{}, "user-1", []string{ref}, nil, nil)
+	if err == nil {
+		t.Fatal("expected malformed reference error")
+	}
+	if strings.Contains(err.Error(), ref) || strings.Contains(err.Error(), marker) {
+		t.Fatalf("error leaks malformed reference input: %v", err)
+	}
+	if strings.Contains(logs.String(), ref) || strings.Contains(logs.String(), marker) {
+		t.Fatalf("log leaks malformed reference input: %s", logs.String())
+	}
 }
 
 // Clients disagree on whether the model sees content or structuredContent, so
