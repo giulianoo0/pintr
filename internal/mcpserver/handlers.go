@@ -18,6 +18,7 @@ import (
 	"github.com/giulianoo0/pintr/internal/codex"
 	"github.com/giulianoo0/pintr/internal/oauth"
 	"github.com/giulianoo0/pintr/internal/random"
+	"github.com/giulianoo0/pintr/internal/referenceupload"
 	"github.com/giulianoo0/pintr/internal/store"
 )
 
@@ -85,6 +86,37 @@ type referenceDownloader interface {
 	Download(context.Context, string) ([]byte, error)
 }
 
+type uploadIssuer interface {
+	Issue(string, referenceupload.Request) (referenceupload.Ticket, error)
+}
+
+func HostedReferenceUpload(issuer uploadIssuer) ReferenceUploadFunc {
+	return func(ctx context.Context, args referenceUploadArgs) (*mcp.CallToolResult, referenceUploadResult, error) {
+		u, ok := oauth.UserFromContext(ctx)
+		if !ok {
+			return nil, referenceUploadResult{}, errors.New("unauthenticated")
+		}
+		ticket, err := issuer.Issue(u.ID, referenceupload.Request{
+			Filename: args.Filename, MIMEType: args.MIMEType, SizeBytes: args.SizeBytes,
+		})
+		if err != nil {
+			return nil, referenceUploadResult{}, err
+		}
+		origin := "the upload URL origin"
+		if parsed, err := url.Parse(ticket.UploadURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			origin = parsed.Scheme + "://" + parsed.Host
+		}
+		instructions := "From Claude's code-execution sandbox, PUT the attached file's raw bytes to upload_url. " +
+			"If the sandbox blocks the request, add " + origin + " under Settings → Capabilities → Code execution " +
+			"and file creation → Additional allowed domains. The URL expires in five minutes. Read the returned ref " +
+			"from the PUT response and pass it to generate_image.reference_images."
+		return nil, referenceUploadResult{
+			UploadURL: ticket.UploadURL, UploadID: ticket.UploadID, ExpiresIn: ticket.ExpiresIn,
+			MaxSizeBytes: ticket.MaxSizeBytes, Instructions: instructions,
+		}, nil
+	}
+}
+
 // resolveHostedReferences turns hosted references into data: URLs. Existing
 // ref_ handles are resolved first and remain reusable until they expire. Any
 // ChatGPT-provided attachments are downloaded directly into memory and
@@ -94,12 +126,12 @@ func resolveHostedReferences(ctx context.Context, st *assets.Store, userID strin
 	for i, ref := range refs {
 		ref = strings.TrimSpace(ref)
 		if !strings.HasPrefix(ref, "ref_") {
-			return nil, fmt.Errorf("reference image %d is not an uploaded handle — the hosted server can't read local files or accept inline base64/data: URLs; upload the raw bytes to /upload and pass the returned ref_ handle", i+1)
+			return nil, fmt.Errorf("reference image %d is not an uploaded handle — the hosted server can't read local files or accept inline base64/data: URLs; call request_reference_upload and pass the returned ref_ handle", i+1)
 		}
 		img, err := st.FetchUpload(ctx, userID, ref)
 		if err != nil {
 			log.Printf("[generate_image] reference image %d failed", i+1)
-			return nil, fmt.Errorf("reference image %d could not be resolved (uploads expire 1 hour after upload — re-upload to /upload and retry with the new handle)", i+1)
+			return nil, fmt.Errorf("reference image %d could not be resolved (uploads expire 1 hour after upload — call request_reference_upload again and retry with the new handle)", i+1)
 		}
 		out = append(out, codex.DataURL(img))
 	}

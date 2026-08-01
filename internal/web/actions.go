@@ -1,11 +1,8 @@
 package web
 
 import (
-	"encoding/json"
-	"io"
 	"log"
 	"net/http"
-	"strings"
 
 	"github.com/giulianoo0/pintr/internal/codex"
 	"github.com/giulianoo0/pintr/internal/store"
@@ -13,7 +10,7 @@ import (
 
 // Dashboard mutations: small session+CSRF-checked POSTs that change one thing
 // and bounce back to the dashboard, plus the few that render or reply directly
-// (key creation, upload, account deletion).
+// (key creation and account deletion).
 
 // mutate runs a session-checked, CSRF-checked change and returns to the dashboard.
 func (h *Handlers) mutate(w http.ResponseWriter, r *http.Request, fn func(store.SessionInfo) error) {
@@ -164,48 +161,4 @@ func (h *Handlers) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	h.clearSessionCookie(w)
 	log.Printf("deleted account %s (%s)", session.User.ID, session.User.Email)
 	http.Redirect(w, r, "/", http.StatusFound)
-}
-
-// handleUpload accepts a reference image (raw bytes, bearer-authenticated),
-// encrypts and stores it, and returns a short handle. The handle goes into a
-// generate_image call instead of the image bytes, keeping large data out of the
-// model's context. The upload stays reusable for one hour, then the janitor
-// deletes it.
-func (h *Handlers) handleUpload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	user, ok := h.provider.AuthenticatedUser(r)
-	if !ok {
-		w.Header().Set("WWW-Authenticate", "Bearer")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if h.assets == nil {
-		http.Error(w, "asset storage is not configured", http.StatusServiceUnavailable)
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 25<<20)) // 25 MiB cap
-	if err != nil {
-		http.Error(w, "could not read body", http.StatusBadRequest)
-		return
-	}
-	if len(body) == 0 {
-		http.Error(w, "empty body", http.StatusBadRequest)
-		return
-	}
-	if mime := http.DetectContentType(body); !strings.HasPrefix(mime, "image/") {
-		http.Error(w, "body is not an image", http.StatusBadRequest)
-		return
-	}
-	handle, err := h.assets.PutUploadEncrypted(r.Context(), user.ID, body)
-	if err != nil {
-		log.Printf("upload for %s: %v", user.ID, err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	h.analytics.Event("reference_upload")
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"ref": handle})
 }

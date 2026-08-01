@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +17,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/giulianoo0/pintr/internal/assets"
+	"github.com/giulianoo0/pintr/internal/oauth"
+	"github.com/giulianoo0/pintr/internal/referenceupload"
+	"github.com/giulianoo0/pintr/internal/store"
 )
 
 type fakeReferenceDownloader struct {
@@ -28,6 +34,221 @@ func (d *fakeReferenceDownloader) Download(_ context.Context, rawURL string) ([]
 		return nil, errors.New("missing test image")
 	}
 	return b, nil
+}
+
+type fakeUploadIssuer struct {
+	userID string
+	req    referenceupload.Request
+}
+
+func (f *fakeUploadIssuer) Issue(userID string, req referenceupload.Request) (referenceupload.Ticket, error) {
+	f.userID, f.req = userID, req
+	return referenceupload.Ticket{
+		UploadURL: "https://pintr.example/reference-upload/token",
+		UploadID:  "upload-1", ExpiresIn: 300, MaxSizeBytes: referenceupload.MaxBytes,
+	}, nil
+}
+
+func authenticatedOAuthContext(t *testing.T) (context.Context, string) {
+	t.Helper()
+	st, err := store.New(filepath.Join(t.TempDir(), "pintr.db"), []byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	user, err := st.CreateUser(context.Background(), "claude@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := st.CreateAccessKey(context.Background(), user.ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := oauth.New("https://pintr.example", st)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	w := httptest.NewRecorder()
+	var authenticated context.Context
+	provider.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authenticated = r.Context()
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent || authenticated == nil {
+		t.Fatalf("OAuth authentication status = %d, context set = %t", w.Code, authenticated != nil)
+	}
+	return authenticated, user.ID
+}
+
+func TestReferenceUploadToolDefinition(t *testing.T) {
+	tool := referenceUploadTool()
+	schema := tool.InputSchema.(*jsonschema.Schema)
+	fields := make([]string, 0, len(schema.Properties))
+	for field := range schema.Properties {
+		fields = append(fields, field)
+	}
+	slices.Sort(fields)
+	if want := []string{"filename", "mime_type", "size_bytes"}; !slices.Equal(fields, want) {
+		t.Fatalf("input fields = %#v, want %#v", fields, want)
+	}
+	required := append([]string(nil), schema.Required...)
+	slices.Sort(required)
+	if want := []string{"filename", "mime_type", "size_bytes"}; !slices.Equal(required, want) {
+		t.Fatalf("required fields = %#v, want %#v", required, want)
+	}
+	for _, phrase := range []string{
+		"sandbox", "Additional allowed domains", "upload_url origin", "pintr.giuli.dev", "five minutes",
+		"returned ref", "generate_image.reference_images",
+	} {
+		if !strings.Contains(tool.Description, phrase) {
+			t.Errorf("description must contain %q, got: %s", phrase, tool.Description)
+		}
+	}
+}
+
+func TestReferenceUploadHostedHandler(t *testing.T) {
+	ctx, userID := authenticatedOAuthContext(t)
+	issuer := &fakeUploadIssuer{}
+	handler := HostedReferenceUpload(issuer)
+	args := referenceUploadArgs{Filename: "portrait.png", MIMEType: "image/png", SizeBytes: 1234}
+
+	callResult, got, err := handler(ctx, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callResult != nil {
+		t.Fatalf("call result = %#v, want nil", callResult)
+	}
+	if issuer.userID != userID {
+		t.Fatalf("issuer user ID = %q, want %q", issuer.userID, userID)
+	}
+	if want := (referenceupload.Request{Filename: "portrait.png", MIMEType: "image/png", SizeBytes: 1234}); issuer.req != want {
+		t.Fatalf("issuer request = %#v, want %#v", issuer.req, want)
+	}
+	if got.UploadURL != "https://pintr.example/reference-upload/token" || got.UploadID != "upload-1" ||
+		got.ExpiresIn != 300 || got.MaxSizeBytes != 10<<20 {
+		t.Fatalf("result does not mirror ticket: %#v", got)
+	}
+	for _, phrase := range []string{
+		"sandbox", "PUT", "Additional allowed domains", "https://pintr.example", "five minutes",
+		"returned ref", "generate_image.reference_images",
+	} {
+		if !strings.Contains(got.Instructions, phrase) {
+			t.Errorf("instructions must contain %q, got: %s", phrase, got.Instructions)
+		}
+	}
+}
+
+func TestReferenceUploadHostedHandlerRejectsUnauthenticated(t *testing.T) {
+	issuer := &fakeUploadIssuer{}
+	_, _, err := HostedReferenceUpload(issuer)(context.Background(), referenceUploadArgs{
+		Filename: "portrait.png", MIMEType: "image/png", SizeBytes: 1234,
+	})
+	if err == nil || err.Error() != "unauthenticated" {
+		t.Fatalf("error = %v, want unauthenticated", err)
+	}
+	if issuer.userID != "" {
+		t.Fatalf("unauthenticated call reached issuer with user %q", issuer.userID)
+	}
+}
+
+func TestReferenceUploadRegistrationIsHostedOnly(t *testing.T) {
+	generate := func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
+		return nil, generateImageResult{}, nil
+	}
+	usage := func(context.Context, getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
+		return nil, usageResult{}, nil
+	}
+	upload := HostedReferenceUpload(&fakeUploadIssuer{})
+
+	for _, tt := range []struct {
+		name   string
+		server *mcp.Server
+		want   bool
+	}{
+		{name: "hosted", server: New(true, generate, usage, upload), want: true},
+		{name: "stdio", server: New(false, generate, usage, upload), want: false},
+		{name: "hosted without storage", server: New(true, generate, usage, nil), want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			serverTransport, clientTransport := mcp.NewInMemoryTransports()
+			serverSession, err := tt.server.Connect(context.Background(), serverTransport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = serverSession.Close() })
+			client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+			clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = clientSession.Close() })
+			listed, err := clientSession.ListTools(context.Background(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, tool := range listed.Tools {
+				if tool.Name == "request_reference_upload" {
+					found = true
+				}
+			}
+			if found != tt.want {
+				t.Fatalf("request_reference_upload registered = %t, want %t", found, tt.want)
+			}
+		})
+	}
+}
+
+func TestReferenceUploadRegisteredToolCallsHostedHandler(t *testing.T) {
+	ctx, userID := authenticatedOAuthContext(t)
+	issuer := &fakeUploadIssuer{}
+	generate := func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
+		return nil, generateImageResult{}, nil
+	}
+	usage := func(context.Context, getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
+		return nil, usageResult{}, nil
+	}
+	server := New(true, generate, usage, HostedReferenceUpload(issuer))
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+
+	result, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "request_reference_upload",
+		Arguments: map[string]any{
+			"filename": "portrait.png", "mime_type": "image/png", "size_bytes": float64(1234),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("registered tool returned error: %#v", result.Content)
+	}
+	if issuer.userID != userID {
+		t.Fatalf("issuer user ID = %q, want %q", issuer.userID, userID)
+	}
+	if want := (referenceupload.Request{Filename: "portrait.png", MIMEType: "image/png", SizeBytes: 1234}); issuer.req != want {
+		t.Fatalf("issuer request = %#v, want %#v", issuer.req, want)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structured content type = %T, want map[string]any", result.StructuredContent)
+	}
+	if structured["upload_url"] != "https://pintr.example/reference-upload/token" ||
+		structured["upload_id"] != "upload-1" || structured["expires_in"] != float64(300) ||
+		structured["max_size_bytes"] != float64(10<<20) {
+		t.Fatalf("wire result does not mirror ticket: %#v", structured)
+	}
 }
 
 // The stdio and hosted servers must advertise only the reference mechanism
@@ -236,6 +457,9 @@ func TestResolveHostedReferenceErrorsHideInputs(t *testing.T) {
 			if strings.Contains(err.Error(), tt.ref) || strings.Contains(err.Error(), tt.marker) {
 				t.Fatalf("error leaks rejected reference input: %v", err)
 			}
+			if strings.Contains(err.Error(), "/upload") || !strings.Contains(err.Error(), "request_reference_upload") {
+				t.Fatalf("error gives obsolete hosted upload guidance: %v", err)
+			}
 		})
 	}
 }
@@ -259,6 +483,9 @@ func TestResolveHostedMalformedReferenceDoesNotLeakToErrorOrLog(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), ref) || strings.Contains(logs.String(), marker) {
 		t.Fatalf("log leaks malformed reference input: %s", logs.String())
+	}
+	if strings.Contains(err.Error(), "/upload") || !strings.Contains(err.Error(), "request_reference_upload") {
+		t.Fatalf("error gives obsolete hosted upload guidance: %v", err)
 	}
 }
 

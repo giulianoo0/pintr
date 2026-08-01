@@ -205,46 +205,6 @@ func (a *Store) presignGet(ctx context.Context, objectKey string) (string, error
 	return presigned.URL, nil
 }
 
-// PutUploadEncrypted encrypts an uploaded reference image under a fresh key,
-// stores only the ciphertext, and returns a short opaque handle that carries
-// the id and key (so no key is stored server-side). The upload stays reusable
-// until the janitor expires it after uploadTTL.
-func (a *Store) PutUploadEncrypted(ctx context.Context, userID string, img []byte) (string, error) {
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return "", err
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", err
-	}
-	blob := gcm.Seal(nonce, nonce, img, nil)
-
-	id, err := random.Token(18)
-	if err != nil {
-		return "", err
-	}
-	objectKey := "uploads/" + userID + "/" + id
-	if _, err := a.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      &a.bucket,
-		Key:         &objectKey,
-		Body:        bytes.NewReader(blob),
-		ContentType: aws.String("application/octet-stream"),
-	}); err != nil {
-		return "", err
-	}
-	// handle = ref_<id>.<key>; the key never touches the server's storage.
-	return "ref_" + id + "." + base64.RawURLEncoding.EncodeToString(key), nil
-}
-
 // PutUploadEncryptedWithID encrypts an uploaded reference image and creates it
 // under the supplied id. The conditional write makes an upload ticket
 // single-use even when requests race across multiple server instances.

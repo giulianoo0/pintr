@@ -17,6 +17,7 @@ import (
 	"github.com/giulianoo0/pintr/internal/codex"
 	"github.com/giulianoo0/pintr/internal/mcpserver"
 	"github.com/giulianoo0/pintr/internal/oauth"
+	"github.com/giulianoo0/pintr/internal/referenceupload"
 	"github.com/giulianoo0/pintr/internal/remoteimage"
 	"github.com/giulianoo0/pintr/internal/store"
 	"github.com/giulianoo0/pintr/internal/turnstile"
@@ -37,7 +38,7 @@ func ServeStdio(ctx context.Context, authFile string) error {
 	if err := codex.EnsureLoggedIn(ctx, authStore); err != nil {
 		return err
 	}
-	server := mcpserver.New(false, mcpserver.StdioGenerate(authStore), mcpserver.StdioUsage(authStore))
+	server := mcpserver.New(false, mcpserver.StdioGenerate(authStore), mcpserver.StdioUsage(authStore), nil)
 	return server.Run(ctx, &mcp.StdioTransport{})
 }
 
@@ -91,6 +92,17 @@ func ServeHTTP(addr string) {
 
 	hostedGenerate := mcpserver.HostedGenerate(st, assetStore, tracker, publicURL, remoteimage.New())
 	hostedUsage := mcpserver.HostedUsage(st, tracker)
+	var (
+		uploadHandler         http.Handler
+		hostedReferenceUpload mcpserver.ReferenceUploadFunc
+	)
+	if assetStore != nil {
+		uploadManager := referenceupload.New([]byte(secret), publicURL, assetStore, func() {
+			tracker.Event("reference_upload")
+		})
+		uploadHandler = uploadManager
+		hostedReferenceUpload = mcpserver.HostedReferenceUpload(uploadManager)
+	}
 
 	// Stateless: getServer runs per request, so the MCP server is always bound
 	// to the current request's authenticated user (no cross-user session reuse).
@@ -99,7 +111,7 @@ func ServeHTTP(addr string) {
 			if _, ok := oauth.UserFromContext(r.Context()); !ok {
 				return nil
 			}
-			return mcpserver.New(true, hostedGenerate, hostedUsage)
+			return mcpserver.New(true, hostedGenerate, hostedUsage, hostedReferenceUpload)
 		},
 		// DisableLocalhostProtection: requests arrive from nginx on 127.0.0.1
 		// with Host pintr.giuli.dev, which the SDK's DNS-rebinding guard would
@@ -108,11 +120,7 @@ func ServeHTTP(addr string) {
 		&mcp.StreamableHTTPOptions{Stateless: true, DisableLocalhostProtection: true},
 	)
 
-	mux := http.NewServeMux()
-	provider.Register(mux)
-	webHandlers.Register(mux)
-	// MCP endpoint (bearer-guarded, per-user)
-	mux.Handle("/mcp", provider.RequireAuth(mcpHandler))
+	mux := newHTTPMux(provider, webHandlers, mcpHandler, uploadHandler)
 
 	httpServer := &http.Server{
 		Addr:              addr,
@@ -123,4 +131,19 @@ func ServeHTTP(addr string) {
 	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("http server: %v", err)
 	}
+}
+
+func newHTTPMux(provider *oauth.Provider, webHandlers *web.Handlers, mcpHandler, uploadHandler http.Handler) *http.ServeMux {
+	mux := http.NewServeMux()
+	provider.Register(mux)
+	webHandlers.Register(mux)
+	if uploadHandler != nil {
+		// The short-lived HMAC ticket is this endpoint's narrowly scoped
+		// authorization; it must remain reachable from Claude's sandbox without
+		// the MCP bearer token.
+		mux.Handle("/reference-upload/", uploadHandler)
+	}
+	// MCP remains bearer-guarded and binds each request to its OAuth user.
+	mux.Handle("/mcp", provider.RequireAuth(mcpHandler))
+	return mux
 }

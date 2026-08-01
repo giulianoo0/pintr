@@ -1,6 +1,6 @@
-// Package mcpserver builds the MCP server and its two tools. The tool
-// handlers differ by mode: stdio works on the single local account; the
-// hosted server on the authenticated user's accounts (handlers.go).
+// Package mcpserver builds the MCP server and its mode-specific tools. The
+// handlers differ by mode: stdio works on the single local account; the hosted
+// server on the authenticated user's accounts (handlers.go).
 package mcpserver
 
 import (
@@ -66,8 +66,23 @@ type usageResult struct {
 	Accounts []codex.AccountUsage `json:"accounts"`
 }
 
+type referenceUploadArgs struct {
+	Filename  string `json:"filename"`
+	MIMEType  string `json:"mime_type"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+type referenceUploadResult struct {
+	UploadURL    string `json:"upload_url"`
+	UploadID     string `json:"upload_id"`
+	ExpiresIn    int64  `json:"expires_in"`
+	MaxSizeBytes int64  `json:"max_size_bytes"`
+	Instructions string `json:"instructions"`
+}
+
 type GenerateFunc func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error)
 type UsageFunc func(context.Context, getUsageArgs) (*mcp.CallToolResult, usageResult, error)
+type ReferenceUploadFunc func(context.Context, referenceUploadArgs) (*mcp.CallToolResult, referenceUploadResult, error)
 
 // The tool description and the reference_images schema are mode-specific on
 // purpose: when both modes shared one description that documented /upload,
@@ -127,8 +142,24 @@ func generateImageTool(hosted bool) *mcp.Tool {
 	return tool
 }
 
-// New builds the MCP server with the two tools bound to the given handlers.
-func New(hosted bool, generate GenerateFunc, usage UsageFunc) *mcp.Server {
+func referenceUploadTool() *mcp.Tool {
+	schema, err := jsonschema.For[referenceUploadArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("request_reference_upload schema: %v", err))
+	}
+	return &mcp.Tool{
+		Name: "request_reference_upload",
+		Description: "Prepare a reference-image upload from Claude's code-execution sandbox using metadata only. " +
+			"If the sandbox blocks the PUT, add the upload_url origin (pintr.giuli.dev on the default hosted service) " +
+			"under Settings → Capabilities → Code execution and file creation → Additional allowed domains. The " +
+			"signed upload URL expires in five minutes. PUT the sandbox file's raw bytes there, then pass the returned " +
+			"ref to generate_image.reference_images.",
+		InputSchema: schema,
+	}
+}
+
+// New builds the MCP server with the tools available in the selected mode.
+func New(hosted bool, generate GenerateFunc, usage UsageFunc, referenceUpload ReferenceUploadFunc) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "pintr", Version: Version}, nil)
 	mcp.AddTool(server, generateImageTool(hosted), func(ctx context.Context, req *mcp.CallToolRequest, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 		ctx, cancel := context.WithTimeout(ctx, generationTimeout)
@@ -148,6 +179,11 @@ func New(hosted bool, generate GenerateFunc, usage UsageFunc) *mcp.Server {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
 		return usage(ctx, args)
 	})
+	if hosted && referenceUpload != nil {
+		mcp.AddTool(server, referenceUploadTool(), func(ctx context.Context, req *mcp.CallToolRequest, args referenceUploadArgs) (*mcp.CallToolResult, referenceUploadResult, error) {
+			return referenceUpload(ctx, args)
+		})
+	}
 	return server
 }
 
