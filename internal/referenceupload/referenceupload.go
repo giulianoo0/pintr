@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	MaxBytes     int64 = 10 << 20
-	UploadTTL          = 5 * time.Minute
-	referenceTTL       = time.Hour
+	MaxBytes         int64 = 10 << 20
+	UploadTTL              = 5 * time.Minute
+	referenceTTL           = time.Hour
+	maxFilenameBytes       = 255
 )
 
 type Request struct {
@@ -74,6 +75,9 @@ func newManager(secret []byte, publicURL string, store uploadStore, onStored fun
 }
 
 func (m *Manager) Issue(userID string, req Request) (Ticket, error) {
+	if !validFilename(req.Filename) {
+		return Ticket{}, errors.New("reference image filename must be nonblank and at most 255 UTF-8 bytes")
+	}
 	if !supportedMIME(req.MIMEType) {
 		return Ticket{}, fmt.Errorf("unsupported reference image MIME type %q", req.MIMEType)
 	}
@@ -116,15 +120,29 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	claim, status := m.verify(strings.TrimPrefix(r.URL.Path, "/reference-upload/"))
 	if status != 0 {
 		if status == http.StatusGone {
-			http.Error(w, "upload URL expired; call request_reference_upload for a new upload URL", status)
+			writeExpired(w)
 			return
 		}
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
+	deadline := time.Unix(claim.ExpiresAt, 0)
+	if err := http.NewResponseController(w).SetReadDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		http.Error(w, "could not secure upload body", http.StatusInternalServerError)
+		return
+	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBytes))
+	if m.now().Unix() >= claim.ExpiresAt {
+		writeExpired(w)
+		return
+	}
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "upload body exceeds the 10 MiB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid upload body", http.StatusBadRequest)
 		return
 	}
@@ -158,6 +176,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}{Ref: ref, ExpiresIn: int64(referenceTTL / time.Second)})
 }
 
+func writeExpired(w http.ResponseWriter) {
+	http.Error(w, "upload URL expired; call request_reference_upload for a new upload URL", http.StatusGone)
+}
+
 func (m *Manager) verify(token string) (claims, int) {
 	payloadText, signatureText, ok := strings.Cut(token, ".")
 	if !ok || payloadText == "" || signatureText == "" || strings.Contains(signatureText, ".") {
@@ -178,7 +200,8 @@ func (m *Manager) verify(token string) (claims, int) {
 	if m.now().Unix() >= claim.ExpiresAt {
 		return claims{}, http.StatusGone
 	}
-	if claim.UploadID == "" || claim.UserID == "" || !supportedMIME(claim.MIMEType) || claim.SizeBytes <= 0 || claim.SizeBytes > MaxBytes {
+	if claim.UploadID == "" || claim.UserID == "" || !validFilename(claim.Filename) ||
+		!supportedMIME(claim.MIMEType) || claim.SizeBytes <= 0 || claim.SizeBytes > MaxBytes {
 		return claims{}, http.StatusUnauthorized
 	}
 	return claim, 0
@@ -188,6 +211,10 @@ func (m *Manager) sign(payload string) []byte {
 	mac := hmac.New(sha256.New, m.secret)
 	_, _ = io.WriteString(mac, payload)
 	return mac.Sum(nil)
+}
+
+func validFilename(filename string) bool {
+	return strings.TrimSpace(filename) != "" && len(filename) <= maxFilenameBytes
 }
 
 func supportedMIME(mimeType string) bool {

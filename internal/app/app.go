@@ -122,14 +122,19 @@ func ServeHTTP(addr string) {
 
 	mux := newHTTPMux(provider, webHandlers, mcpHandler, uploadHandler)
 
-	httpServer := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpServer := newHTTPServer(addr, mux)
 	log.Printf("pintr listening on %s (public url %s, db %s)", addr, publicURL, dbPath)
 	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("http server: %v", err)
+	}
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       5 * time.Minute,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 }
 

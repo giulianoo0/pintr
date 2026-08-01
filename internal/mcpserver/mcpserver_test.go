@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -23,15 +24,37 @@ import (
 )
 
 type fakeReferenceDownloader struct {
-	data  map[string][]byte
-	calls []string
+	data   map[string][]byte
+	calls  []string
+	events *[]string
 }
 
 func (d *fakeReferenceDownloader) Download(_ context.Context, rawURL string) ([]byte, error) {
 	d.calls = append(d.calls, rawURL)
+	if d.events != nil {
+		*d.events = append(*d.events, "download:"+rawURL)
+	}
 	b, ok := d.data[rawURL]
 	if !ok {
 		return nil, errors.New("missing test image")
+	}
+	return b, nil
+}
+
+type fakeReferenceFetcher struct {
+	data   map[string][]byte
+	calls  []string
+	events *[]string
+}
+
+func (f *fakeReferenceFetcher) FetchUpload(_ context.Context, userID, handle string) ([]byte, error) {
+	f.calls = append(f.calls, userID+":"+handle)
+	if f.events != nil {
+		*f.events = append(*f.events, "fetch:"+handle)
+	}
+	b, ok := f.data[handle]
+	if !ok {
+		return nil, errors.New("missing test upload")
 	}
 	return b, nil
 }
@@ -291,6 +314,21 @@ func TestGenerateImageToolPerMode(t *testing.T) {
 	if !ok {
 		t.Fatal("hosted schema omits reference_image_files")
 	}
+	if got := fileSchema["maxItems"]; got != float64(8) {
+		t.Fatalf("hosted reference_image_files maxItems = %#v, want 8", got)
+	}
+	if got := hostedProperties["reference_images"].(map[string]any)["maxItems"]; got != float64(8) {
+		t.Fatalf("hosted reference_images maxItems = %#v, want 8", got)
+	}
+	if got := stdioProperties["reference_images"].(map[string]any)["maxItems"]; got != nil {
+		t.Fatalf("stdio reference_images maxItems = %#v, want unchanged/unbounded", got)
+	}
+	fileDescription, _ := fileSchema["description"].(string)
+	for _, limit := range []string{"8 total", "40 MiB total", "10 MiB per image"} {
+		if !strings.Contains(fileDescription, limit) {
+			t.Errorf("reference_image_files schema description must state %q", limit)
+		}
+	}
 	fileTypes := fileSchema["type"].([]any)
 	if !slices.Contains(fileTypes, any("array")) {
 		t.Fatalf("reference_image_files type = %#v", fileTypes)
@@ -338,6 +376,11 @@ func TestGenerateImageToolPerMode(t *testing.T) {
 	if !strings.Contains(hosted.Description, "reference_image_files") {
 		t.Errorf("hosted description must direct ChatGPT to attachment parameters, got: %s", hosted.Description)
 	}
+	for _, limit := range []string{"8 total", "40 MiB total", "10 MiB per image"} {
+		if !strings.Contains(hosted.Description, limit) || !strings.Contains(hostedRefs, limit) {
+			t.Errorf("hosted tool copy must state the %q reference limit", limit)
+		}
+	}
 	if !strings.Contains(hosted.Description, "Do not manually construct") {
 		t.Errorf("hosted description must tell ChatGPT not to construct file descriptors, got: %s", hosted.Description)
 	}
@@ -351,6 +394,205 @@ func TestGenerateImageToolPerMode(t *testing.T) {
 	}
 	if !strings.Contains(hosted.Description, "24 hours") {
 		t.Error("hosted tool description must mention the 24h auto-delete")
+	}
+}
+
+func TestResolveHostedReferencesRejectsCombinedCountBeforeIO(t *testing.T) {
+	fetcher := &fakeReferenceFetcher{data: map[string][]byte{}}
+	refs := make([]string, 4)
+	for i := range refs {
+		refs[i] = fmt.Sprintf("ref_%d.test-key", i)
+		fetcher.data[refs[i]] = []byte("\x89PNG\r\n\x1a\nref")
+	}
+	downloader := &fakeReferenceDownloader{data: map[string][]byte{}}
+	files := make([]referenceImageFile, 5)
+	for i := range files {
+		rawURL := fmt.Sprintf("https://files.example/%d", i)
+		files[i] = referenceImageFile{
+			DownloadURL: rawURL,
+			FileID:      fmt.Sprintf("file-%d", i),
+		}
+		downloader.data[rawURL] = []byte("\x89PNG\r\n\x1a\nfile")
+	}
+
+	_, err := resolveHostedReferences(context.Background(), fetcher, "user-1", refs, files, downloader)
+	if err == nil || !strings.Contains(err.Error(), "at most 8") {
+		t.Fatalf("error = %v, want combined-count limit", err)
+	}
+	if len(fetcher.calls) != 0 {
+		t.Fatalf("over-count request caused handle fetches: %#v", fetcher.calls)
+	}
+	if len(downloader.calls) != 0 {
+		t.Fatalf("over-count request caused downloads: %#v", downloader.calls)
+	}
+}
+
+func TestResolveHostedReferencesEnforcesDecodedByteBudget(t *testing.T) {
+	tenMiB := make([]byte, 10<<20)
+	copy(tenMiB, []byte("\x89PNG\r\n\x1a\n"))
+	oneByte := []byte{'x'}
+	downloader := &fakeReferenceDownloader{data: map[string][]byte{
+		"https://files.example/one":   tenMiB,
+		"https://files.example/two":   tenMiB,
+		"https://files.example/three": tenMiB,
+		"https://files.example/four":  tenMiB,
+		"https://files.example/five":  oneByte,
+	}}
+	files := []referenceImageFile{
+		{DownloadURL: "https://files.example/one", FileID: "one"},
+		{DownloadURL: "https://files.example/two", FileID: "two"},
+		{DownloadURL: "https://files.example/three", FileID: "three"},
+		{DownloadURL: "https://files.example/four", FileID: "four"},
+		{DownloadURL: "https://files.example/five", FileID: "five"},
+	}
+
+	_, err := resolveHostedReferences(context.Background(), nil, "user-1", nil, files, downloader)
+	if err == nil || !strings.Contains(err.Error(), "40 MiB") {
+		t.Fatalf("error = %v, want decoded-byte aggregate limit", err)
+	}
+	if want := []string{
+		"https://files.example/one",
+		"https://files.example/two",
+		"https://files.example/three",
+		"https://files.example/four",
+		"https://files.example/five",
+	}; !slices.Equal(downloader.calls, want) {
+		t.Fatalf("download calls = %#v, want %#v", downloader.calls, want)
+	}
+}
+
+func TestResolveHostedReferencesPrevalidatesAllFilesBeforeIO(t *testing.T) {
+	ref := "ref_public.test-key"
+	fetcher := &fakeReferenceFetcher{data: map[string][]byte{
+		ref: []byte("\x89PNG\r\n\x1a\nhandle"),
+	}}
+	downloader := &fakeReferenceDownloader{data: map[string][]byte{
+		"https://files.example/valid": []byte("\x89PNG\r\n\x1a\nfile"),
+	}}
+	files := []referenceImageFile{
+		{DownloadURL: "https://files.example/valid", FileID: "file-valid"},
+		{DownloadURL: "https://files.example/invalid"},
+	}
+
+	_, err := resolveHostedReferences(context.Background(), fetcher, "user-1", []string{ref}, files, downloader)
+	if err == nil || !strings.Contains(err.Error(), "attachment 2") || !strings.Contains(err.Error(), "file_id") {
+		t.Fatalf("error = %v, want second-descriptor validation error", err)
+	}
+	if len(fetcher.calls) != 0 {
+		t.Fatalf("invalid descriptor batch caused handle fetches: %#v", fetcher.calls)
+	}
+	if len(downloader.calls) != 0 {
+		t.Fatalf("invalid descriptor batch caused downloads: %#v", downloader.calls)
+	}
+}
+
+func TestResolveHostedReferencesPreservesMixedLaneOrder(t *testing.T) {
+	var events []string
+	firstRef := "ref_first.test-key"
+	secondRef := "ref_second.test-key"
+	fetcher := &fakeReferenceFetcher{
+		data: map[string][]byte{
+			firstRef:  []byte("\x89PNG\r\n\x1a\nfirst-handle"),
+			secondRef: []byte("GIF89a\x01\x00\x01\x00second-handle"),
+		},
+		events: &events,
+	}
+	downloader := &fakeReferenceDownloader{
+		data: map[string][]byte{
+			"https://files.example/first":  []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00first-file"),
+			"https://files.example/second": []byte("RIFF\x0c\x00\x00\x00WEBPVP8 second-file"),
+		},
+		events: &events,
+	}
+	files := []referenceImageFile{
+		{DownloadURL: "https://files.example/first", FileID: "file-first"},
+		{DownloadURL: "https://files.example/second", FileID: "file-second"},
+	}
+
+	got, err := resolveHostedReferences(context.Background(), fetcher, "user-1", []string{firstRef, secondRef}, files, downloader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"data:image/png;base64,iVBORw0KGgpmaXJzdC1oYW5kbGU=",
+		"data:image/gif;base64,R0lGODlhAQABAHNlY29uZC1oYW5kbGU=",
+		"data:image/jpeg;base64,/9j/4AAQSkZJRgBmaXJzdC1maWxl",
+		"data:image/webp;base64,UklGRgwAAABXRUJQVlA4IHNlY29uZC1maWxl",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("references = %#v, want %#v", got, want)
+	}
+	if wantEvents := []string{
+		"fetch:" + firstRef,
+		"fetch:" + secondRef,
+		"download:https://files.example/first",
+		"download:https://files.example/second",
+	}; !slices.Equal(events, wantEvents) {
+		t.Fatalf("I/O order = %#v, want %#v", events, wantEvents)
+	}
+}
+
+func TestResolveHostedReferencesRejectsOversizeFetchedHandle(t *testing.T) {
+	ref := "ref_oversize.test-key"
+	fetcher := &fakeReferenceFetcher{data: map[string][]byte{ref: make([]byte, (10<<20)+1)}}
+
+	_, err := resolveHostedReferences(context.Background(), fetcher, "user-1", []string{ref}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "reference image 1") || !strings.Contains(err.Error(), "10 MiB") {
+		t.Fatalf("error = %v, want fetched-handle size limit", err)
+	}
+	if len(fetcher.calls) != 1 {
+		t.Fatalf("fetch calls = %#v, want one", fetcher.calls)
+	}
+}
+
+func TestResolveHostedReferencesSharesByteBudgetAcrossLanes(t *testing.T) {
+	tenMiB := make([]byte, 10<<20)
+	copy(tenMiB, []byte("\x89PNG\r\n\x1a\n"))
+	refs := []string{"ref_one.test-key", "ref_two.test-key", "ref_three.test-key"}
+	fetcher := &fakeReferenceFetcher{data: map[string][]byte{
+		refs[0]: tenMiB,
+		refs[1]: tenMiB,
+		refs[2]: tenMiB,
+	}}
+	downloader := &fakeReferenceDownloader{data: map[string][]byte{
+		"https://files.example/four": tenMiB,
+		"https://files.example/five": []byte{'x'},
+	}}
+	files := []referenceImageFile{
+		{DownloadURL: "https://files.example/four", FileID: "four"},
+		{DownloadURL: "https://files.example/five", FileID: "five"},
+	}
+
+	_, err := resolveHostedReferences(context.Background(), fetcher, "user-1", refs, files, downloader)
+	if err == nil || !strings.Contains(err.Error(), "40 MiB") {
+		t.Fatalf("error = %v, want shared decoded-byte limit", err)
+	}
+	if len(fetcher.calls) != 3 || len(downloader.calls) != 2 {
+		t.Fatalf("fetch calls = %d, download calls = %d; want 3 and 2", len(fetcher.calls), len(downloader.calls))
+	}
+}
+
+func TestResolveHostedReferencesAllowsEightCombined(t *testing.T) {
+	fetcher := &fakeReferenceFetcher{data: map[string][]byte{}}
+	refs := make([]string, 4)
+	for i := range refs {
+		refs[i] = fmt.Sprintf("ref_%d.test-key", i)
+		fetcher.data[refs[i]] = []byte("\x89PNG\r\n\x1a\nref")
+	}
+	downloader := &fakeReferenceDownloader{data: map[string][]byte{}}
+	files := make([]referenceImageFile, 4)
+	for i := range files {
+		rawURL := fmt.Sprintf("https://files.example/%d", i)
+		files[i] = referenceImageFile{DownloadURL: rawURL, FileID: fmt.Sprintf("file-%d", i)}
+		downloader.data[rawURL] = []byte("\x89PNG\r\n\x1a\nfile")
+	}
+
+	got, err := resolveHostedReferences(context.Background(), fetcher, "user-1", refs, files, downloader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 8 {
+		t.Fatalf("resolved references = %d, want 8", len(got))
 	}
 }
 

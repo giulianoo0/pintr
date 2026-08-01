@@ -86,6 +86,10 @@ type referenceDownloader interface {
 	Download(context.Context, string) ([]byte, error)
 }
 
+type referenceFetcher interface {
+	FetchUpload(context.Context, string, string) ([]byte, error)
+}
+
 type uploadIssuer interface {
 	Issue(string, referenceupload.Request) (referenceupload.Ticket, error)
 }
@@ -121,19 +125,10 @@ func HostedReferenceUpload(issuer uploadIssuer) ReferenceUploadFunc {
 // ref_ handles are resolved first and remain reusable until they expire. Any
 // ChatGPT-provided attachments are downloaded directly into memory and
 // appended in argument order; their bytes are never persisted.
-func resolveHostedReferences(ctx context.Context, st *assets.Store, userID string, refs []string, files []referenceImageFile, downloader referenceDownloader) ([]string, error) {
-	out := make([]string, 0, len(refs)+len(files))
-	for i, ref := range refs {
-		ref = strings.TrimSpace(ref)
-		if !strings.HasPrefix(ref, "ref_") {
-			return nil, fmt.Errorf("reference image %d is not an uploaded handle — the hosted server can't read local files or accept inline base64/data: URLs; call request_reference_upload and pass the returned ref_ handle", i+1)
-		}
-		img, err := st.FetchUpload(ctx, userID, ref)
-		if err != nil {
-			log.Printf("[generate_image] reference image %d failed", i+1)
-			return nil, fmt.Errorf("reference image %d could not be resolved (uploads expire 1 hour after upload — call request_reference_upload again and retry with the new handle)", i+1)
-		}
-		out = append(out, codex.DataURL(img))
+func resolveHostedReferences(ctx context.Context, st referenceFetcher, userID string, refs []string, files []referenceImageFile, downloader referenceDownloader) ([]string, error) {
+	if len(refs) > hostedMaxReferenceImages || len(files) > hostedMaxReferenceImages ||
+		len(refs) > hostedMaxReferenceImages-len(files) {
+		return nil, fmt.Errorf("hosted generation accepts at most %d total reference images", hostedMaxReferenceImages)
 	}
 	for i, file := range files {
 		if strings.TrimSpace(file.DownloadURL) == "" {
@@ -142,16 +137,51 @@ func resolveHostedReferences(ctx context.Context, st *assets.Store, userID strin
 		if strings.TrimSpace(file.FileID) == "" {
 			return nil, fmt.Errorf("attachment %d is missing file_id", i+1)
 		}
-		if downloader == nil {
-			return nil, fmt.Errorf("attachment %d cannot be downloaded", i+1)
+	}
+	if len(files) > 0 && downloader == nil {
+		return nil, errors.New("attachments cannot be downloaded")
+	}
+	out := make([]string, 0, len(refs)+len(files))
+	totalBytes := 0
+	for i, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if !strings.HasPrefix(ref, "ref_") {
+			return nil, fmt.Errorf("reference image %d is not an uploaded handle — the hosted server can't read local files or accept inline base64/data: URLs; call request_reference_upload and pass the returned ref_ handle", i+1)
 		}
+		if st == nil {
+			return nil, fmt.Errorf("reference image %d could not be resolved", i+1)
+		}
+		img, err := st.FetchUpload(ctx, userID, ref)
+		if err != nil {
+			log.Printf("[generate_image] reference image %d failed", i+1)
+			return nil, fmt.Errorf("reference image %d could not be resolved (uploads expire 1 hour after upload — call request_reference_upload again and retry with the new handle)", i+1)
+		}
+		if err := appendHostedReference(&out, &totalBytes, img, fmt.Sprintf("reference image %d", i+1)); err != nil {
+			return nil, err
+		}
+	}
+	for i, file := range files {
 		img, err := downloader.Download(ctx, file.DownloadURL)
 		if err != nil {
 			return nil, fmt.Errorf("attachment %d download failed; retry with the attachment", i+1)
 		}
-		out = append(out, codex.DataURL(img))
+		if err := appendHostedReference(&out, &totalBytes, img, fmt.Sprintf("attachment %d", i+1)); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
+}
+
+func appendHostedReference(out *[]string, totalBytes *int, img []byte, label string) error {
+	if len(img) > hostedMaxReferenceImageBytes {
+		return fmt.Errorf("%s exceeds the 10 MiB decoded size limit", label)
+	}
+	if len(img) > hostedMaxReferenceTotalBytes-*totalBytes {
+		return errors.New("hosted reference images exceed the 40 MiB total decoded size limit")
+	}
+	*totalBytes += len(img)
+	*out = append(*out, codex.DataURL(img))
+	return nil
 }
 
 // viewURL builds the decrypted-view link served by web's /view handler: the

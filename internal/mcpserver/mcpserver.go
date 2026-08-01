@@ -24,8 +24,11 @@ const Version = "0.2.0"
 // default tool timeouts are shorter than a generation) from giving up, and
 // keep bytes flowing so Cloudflare/nginx don't idle the connection out.
 const (
-	generationTimeout = 10 * time.Minute
-	progressInterval  = 10 * time.Second
+	generationTimeout            = 10 * time.Minute
+	progressInterval             = 10 * time.Second
+	hostedMaxReferenceImages     = 8
+	hostedMaxReferenceImageBytes = 10 << 20
+	hostedMaxReferenceTotalBytes = 40 << 20
 )
 
 // generateImageArgs is the MCP tool input. There is deliberately no model
@@ -106,6 +109,8 @@ const generateDescriptionHosted = generateDescriptionCommon +
 	"(image/png) directly, no decryption needed on your side. (asset_url is the raw encrypted ciphertext and " +
 	"decryption_key is its key, if you'd rather fetch and decrypt it yourself.) " +
 	"Stored images auto-delete 24 hours after generation — download the PNG if you need it longer. " +
+	"Hosted calls accept at most 8 total reference images across reference_images and reference_image_files, " +
+	"with 40 MiB total decoded bytes and 10 MiB per image. " +
 	"In ChatGPT, attach images to the conversation; the host supplies them through reference_image_files. Do not manually construct " +
 	"file descriptors. In Claude, call " +
 	"request_reference_upload and pass the returned ref_ handle through reference_images. This server is " +
@@ -118,6 +123,8 @@ const refsDescriptionStdio = "optional reference images to anchor a character or
 const refsDescriptionHosted = "optional reference images to anchor a character or style, passed as ref_ " +
 	"upload handles. This server is remote: it cannot read files off your machine, so local paths do not " +
 	"work here. Do NOT base64-encode, inline, or pass data: URLs — that bloats context and is rejected. " +
+	"Hosted calls accept at most 8 total reference images across reference_images and reference_image_files, " +
+	"with 40 MiB total decoded bytes and 10 MiB per image. " +
 	"In Claude, call request_reference_upload and pass its ref_ handle here. Uploads auto-delete after 1 " +
 	"hour, so the same handle can be reused across multiple generate_image calls within that window. In " +
 	"ChatGPT, pass attachments directly through reference_image_files instead."
@@ -132,6 +139,11 @@ func generateImageTool(hosted bool) *mcp.Tool {
 	description, refsDescription := generateDescriptionStdio, refsDescriptionStdio
 	if hosted {
 		description, refsDescription = generateDescriptionHosted, refsDescriptionHosted
+		schema.Properties["reference_images"].MaxItems = jsonschema.Ptr(hostedMaxReferenceImages)
+		schema.Properties["reference_image_files"].MaxItems = jsonschema.Ptr(hostedMaxReferenceImages)
+		schema.Properties["reference_image_files"].Description = "ChatGPT-provided attached reference images. " +
+			"Hosted calls accept at most 8 total images across reference_images and reference_image_files, " +
+			"with 40 MiB total decoded bytes and 10 MiB per image."
 	} else {
 		delete(schema.Properties, "reference_image_files")
 	}

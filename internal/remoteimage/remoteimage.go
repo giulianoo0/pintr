@@ -44,6 +44,10 @@ type Downloader struct {
 func New() *Downloader {
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
+		MaxIdleConns:        32,
+		MaxIdleConnsPerHost: 4,
+		MaxConnsPerHost:     8,
+		IdleConnTimeout:     30 * time.Second,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(address)
 			if err != nil {
@@ -85,6 +89,7 @@ func newTestDownloader(transport http.RoundTripper) *Downloader {
 }
 
 func checkRedirect(req *http.Request, via []*http.Request) error {
+	req.Header.Del("Referer")
 	if len(via) >= 10 {
 		return errors.New("too many redirects")
 	}

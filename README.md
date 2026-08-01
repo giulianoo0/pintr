@@ -138,6 +138,10 @@ you are in:
 - **Local stdio only:** pass local file paths in `reference_images`. Paths are
   local-only; they do not work with the hosted server.
 
+Each hosted `generate_image` call accepts at most 8 reference images total
+across `reference_images` and `reference_image_files`. Each resolved image is
+limited to 10 MiB decoded, with 40 MiB total decoded reference bytes per call.
+
 Signed upload URLs expire after five minutes. `ref_` tokens expire after one
 hour, and generated outputs expire after 24 hours. Do not inline image bytes,
 base64, or data URLs into a hosted tool call.

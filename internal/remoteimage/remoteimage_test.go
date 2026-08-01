@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -256,5 +257,55 @@ func TestProductionClientLimitsRedirects(t *testing.T) {
 	via := make([]*http.Request, 10)
 	if err := New().client.CheckRedirect(&http.Request{URL: target}, via); err == nil {
 		t.Fatal("CheckRedirect() accepted an eleventh request")
+	}
+}
+
+func TestProductionTransportBoundsConnectionPool(t *testing.T) {
+	transport, ok := New().client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("production transport type = %T, want *http.Transport", New().client.Transport)
+	}
+	if transport.MaxIdleConns != 32 {
+		t.Errorf("MaxIdleConns = %d, want 32", transport.MaxIdleConns)
+	}
+	if transport.MaxIdleConnsPerHost != 4 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want 4", transport.MaxIdleConnsPerHost)
+	}
+	if transport.MaxConnsPerHost != 8 {
+		t.Errorf("MaxConnsPerHost = %d, want 8", transport.MaxConnsPerHost)
+	}
+	if transport.IdleConnTimeout != 30*time.Second {
+		t.Errorf("IdleConnTimeout = %s, want 30s", transport.IdleConnTimeout)
+	}
+}
+
+func TestRedirectDoesNotForwardSignedSourceURLAsReferer(t *testing.T) {
+	const signature = "do-not-forward-this-signature"
+	var gotReferer string
+	d := newTestDownloader(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "files.example":
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"https://cdn.example/image.png"}},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		case "cdn.example":
+			gotReferer = req.Header.Get("Referer")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader([]byte("\x89PNG\r\n\x1a\nimage"))),
+			}, nil
+		default:
+			return nil, errors.New("unexpected test host")
+		}
+	}))
+
+	if _, err := d.Download(context.Background(), "https://files.example/image.png?sig="+signature); err != nil {
+		t.Fatal(err)
+	}
+	if gotReferer != "" {
+		t.Fatal("redirect forwarded a Referer")
 	}
 }

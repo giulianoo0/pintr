@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/giulianoo0/pintr/internal/oauth"
 	"github.com/giulianoo0/pintr/internal/store"
@@ -78,5 +79,15 @@ func TestHTTPRoutesOmitReferenceUploadWhenStorageIsUnavailable(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("reference upload without storage status = %d, want 404", w.Code)
+	}
+}
+
+func TestHostedHTTPServerHasRequestBodyReadTimeout(t *testing.T) {
+	server := newHTTPServer(":0", http.NotFoundHandler())
+	if server.ReadTimeout != 5*time.Minute {
+		t.Fatalf("ReadTimeout = %s, want 5m", server.ReadTimeout)
+	}
+	if server.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %s, want 10s", server.ReadHeaderTimeout)
 	}
 }

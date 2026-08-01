@@ -182,6 +182,10 @@ Generate an image. Input:
 - **Local stdio:** local file paths in `reference_images` work only because the
   server runs on the same machine. They are not a hosted workflow.
 
+Each hosted `generate_image` call accepts at most 8 reference images total
+across `reference_images` and `reference_image_files`. Each resolved image is
+limited to 10 MiB decoded, with 40 MiB total decoded reference bytes per call.
+
 Do not embed image bytes, base64, or data URLs in a hosted tool call.
 
 Generation can take up to 420 seconds — a long-running call is not stuck.

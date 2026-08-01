@@ -3,7 +3,9 @@ package referenceupload
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +21,32 @@ type fakeStore struct {
 	seen   map[string]bool
 	calls  int
 	stored []byte
+}
+
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadline time.Time
+	calls    int
+}
+
+func (w *deadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	w.calls++
+	return nil
+}
+
+type clockAdvancingReader struct {
+	reader  *bytes.Reader
+	advance func()
+	did     bool
+}
+
+func (r *clockAdvancingReader) Read(p []byte) (int, error) {
+	if !r.did {
+		r.did = true
+		r.advance()
+	}
+	return r.reader.Read(p)
 }
 
 func (s *fakeStore) PutUploadEncryptedWithID(_ context.Context, userID, id string, body []byte) (string, error) {
@@ -47,6 +75,17 @@ func issuePNG(t *testing.T, m *Manager) Ticket {
 		t.Fatal(err)
 	}
 	return ticket
+}
+
+func signedUploadURL(t *testing.T, m *Manager, claim claims) string {
+	t.Helper()
+	payload, err := json.Marshal(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadText := base64.RawURLEncoding.EncodeToString(payload)
+	token := payloadText + "." + base64.RawURLEncoding.EncodeToString(m.sign(payloadText))
+	return m.publicURL + "/reference-upload/" + token
 }
 
 func put(t *testing.T, m *Manager, uploadURL string, body []byte) *httptest.ResponseRecorder {
@@ -182,6 +221,59 @@ func TestExpiredTicketReturnsGoneWithoutStoring(t *testing.T) {
 	}
 }
 
+func TestUploadSetsReadDeadlineToExactTicketExpiry(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{seen: map[string]bool{}}
+	m := newTestManager([]byte("01234567890123456789012345678901"), "https://pintr.example", store, func() time.Time { return now })
+	ticket := issuePNG(t, m)
+	req := httptest.NewRequest(http.MethodPut, ticket.UploadURL, bytes.NewReader(testPNG))
+	w := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	m.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w.Code)
+	}
+	if w.calls != 1 {
+		t.Fatalf("SetReadDeadline calls = %d, want 1", w.calls)
+	}
+	if want := time.Date(2026, 8, 1, 12, 5, 0, 0, time.UTC); !w.deadline.Equal(want) {
+		t.Fatalf("read deadline = %s, want %s", w.deadline, want)
+	}
+}
+
+func TestUploadRechecksExpiryAfterReadingBody(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{seen: map[string]bool{}}
+	m := newTestManager([]byte("01234567890123456789012345678901"), "https://pintr.example", store, func() time.Time { return now })
+	ticket := issuePNG(t, m)
+	body := &clockAdvancingReader{
+		reader: bytes.NewReader(testPNG),
+		advance: func() {
+			now = now.Add(UploadTTL)
+		},
+	}
+	req := httptest.NewRequest(http.MethodPut, ticket.UploadURL, body)
+	w := httptest.NewRecorder()
+
+	m.ServeHTTP(w, req)
+
+	if w.Code != http.StatusGone {
+		t.Fatalf("status = %d, want 410", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "request_reference_upload") || !strings.Contains(w.Body.String(), "new upload URL") {
+		t.Fatalf("response does not tell Claude how to recover: %q", w.Body.String())
+	}
+	for _, secret := range []string{ticket.UploadURL, ticket.UploadID, "ref.png", "user-1"} {
+		if strings.Contains(w.Body.String(), secret) {
+			t.Fatalf("response leaks upload input %q: %q", secret, w.Body.String())
+		}
+	}
+	if store.calls != 0 {
+		t.Fatalf("store calls = %d, want 0", store.calls)
+	}
+}
+
 func TestNonPUTReturnsMethodNotAllowed(t *testing.T) {
 	m := newTestManager([]byte("01234567890123456789012345678901"), "https://pintr.example", &fakeStore{seen: map[string]bool{}}, time.Now)
 	req := httptest.NewRequest(http.MethodPost, "/reference-upload/anything", nil)
@@ -225,6 +317,63 @@ func TestIssueAcceptsSupportedMIMEsAtMaximumSize(t *testing.T) {
 	}
 }
 
+func TestIssueValidatesFilenameUTF8ByteBoundaries(t *testing.T) {
+	m := newTestManager([]byte("01234567890123456789012345678901"), "https://pintr.example", &fakeStore{seen: map[string]bool{}}, time.Now)
+	for _, tt := range []struct {
+		name     string
+		filename string
+	}{
+		{name: "empty", filename: ""},
+		{name: "whitespace", filename: " \t\n"},
+		{name: "over 255 UTF-8 bytes", filename: strings.Repeat("é", 128)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := m.Issue("user-1", Request{Filename: tt.filename, MIMEType: "image/png", SizeBytes: int64(len(testPNG))})
+			if err == nil {
+				t.Fatalf("Issue accepted filename with %d UTF-8 bytes", len(tt.filename))
+			}
+			if tt.filename != "" && strings.Contains(err.Error(), tt.filename) {
+				t.Fatalf("validation error exposed filename: %v", err)
+			}
+		})
+	}
+
+	filename := strings.Repeat("é", 127) + "a"
+	if len(filename) != 255 {
+		t.Fatalf("boundary fixture has %d bytes, want 255", len(filename))
+	}
+	if _, err := m.Issue("user-1", Request{Filename: filename, MIMEType: "image/png", SizeBytes: int64(len(testPNG))}); err != nil {
+		t.Fatalf("Issue rejected 255-byte filename: %v", err)
+	}
+}
+
+func TestUploadRejectsSignedInvalidFilenameClaimsWithoutStoring(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	for _, filename := range []string{" \t", strings.Repeat("é", 128)} {
+		t.Run(fmt.Sprintf("%d_bytes", len(filename)), func(t *testing.T) {
+			store := &fakeStore{seen: map[string]bool{}}
+			m := newTestManager([]byte("01234567890123456789012345678901"), "https://pintr.example", store, func() time.Time { return now })
+			uploadURL := signedUploadURL(t, m, claims{
+				UploadID:  "upload-id",
+				UserID:    "user-1",
+				Filename:  filename,
+				MIMEType:  "image/png",
+				SizeBytes: int64(len(testPNG)),
+				ExpiresAt: now.Add(UploadTTL).Unix(),
+			})
+
+			w := put(t, m, uploadURL, testPNG)
+
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", w.Code)
+			}
+			if store.calls != 0 {
+				t.Fatalf("store calls = %d, want 0", store.calls)
+			}
+		})
+	}
+}
+
 func TestUploadRejectsBodyWithDifferentSize(t *testing.T) {
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -246,6 +395,27 @@ func TestUploadRejectsBodyWithDifferentSize(t *testing.T) {
 				t.Fatalf("store calls = %d, want 0", store.calls)
 			}
 		})
+	}
+}
+
+func TestUploadRejectsMaxBytesPlusOneBodyWithoutStoring(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{seen: map[string]bool{}}
+	m := newTestManager([]byte("01234567890123456789012345678901"), "https://pintr.example", store, func() time.Time { return now })
+	ticket, err := m.Issue("user-1", Request{Filename: "ref.png", MIMEType: "image/png", SizeBytes: MaxBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, MaxBytes+1)
+	copy(body, testPNG)
+
+	w := put(t, m, ticket.UploadURL, body)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", w.Code)
+	}
+	if store.calls != 0 {
+		t.Fatalf("store calls = %d, want 0", store.calls)
 	}
 }
 
