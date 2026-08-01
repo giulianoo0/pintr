@@ -159,7 +159,7 @@ func (m *Manager) verify(token string) (claims, int) {
 	if !ok || payloadText == "" || signatureText == "" || strings.Contains(signatureText, ".") {
 		return claims{}, http.StatusUnauthorized
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(signatureText)
+	signature, err := base64.RawURLEncoding.Strict().DecodeString(signatureText)
 	if err != nil || !hmac.Equal(signature, m.sign(payloadText)) {
 		return claims{}, http.StatusUnauthorized
 	}

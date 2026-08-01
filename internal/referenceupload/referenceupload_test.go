@@ -134,6 +134,29 @@ func TestTamperedTicketReturnsUnauthorizedWithoutStoring(t *testing.T) {
 	}
 }
 
+func TestTamperedFinalSignatureCharacterReturnsUnauthorizedWithoutStoring(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{seen: map[string]bool{}}
+	m := newTestManager([]byte("01234567890123456789012345678901"), "https://pintr.example", store, func() time.Time { return now })
+	ticket := issuePNG(t, m)
+
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := ticket.UploadURL[len(ticket.UploadURL)-1]
+	index := strings.IndexByte(alphabet, last)
+	if index < 0 || index%4 != 0 || index == len(alphabet)-1 {
+		t.Fatalf("unexpected canonical final signature character index %d", index)
+	}
+	tampered := ticket.UploadURL[:len(ticket.UploadURL)-1] + string(alphabet[index+1])
+	w := put(t, m, tampered, testPNG)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	if store.calls != 0 {
+		t.Fatalf("store calls = %d, want 0", store.calls)
+	}
+}
+
 func TestExpiredTicketReturnsGoneWithoutStoring(t *testing.T) {
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	store := &fakeStore{seen: map[string]bool{}}
