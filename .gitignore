@@ -11,3 +11,6 @@ auth.json
 
 # server/local secrets
 .env
+
+# Isolated development worktrees
+/.worktrees/
