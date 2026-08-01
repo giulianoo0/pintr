@@ -169,6 +169,14 @@ func TestExpiredTicketReturnsGoneWithoutStoring(t *testing.T) {
 	if w.Code != http.StatusGone {
 		t.Fatalf("status = %d, want 410", w.Code)
 	}
+	if !strings.Contains(w.Body.String(), "request_reference_upload") || !strings.Contains(w.Body.String(), "new upload URL") {
+		t.Fatalf("response does not tell Claude how to recover: %q", w.Body.String())
+	}
+	for _, secret := range []string{ticket.UploadURL, ticket.UploadID, "ref.png", "user-1"} {
+		if strings.Contains(w.Body.String(), secret) {
+			t.Fatalf("response leaks upload input %q: %q", secret, w.Body.String())
+		}
+	}
 	if store.calls != 0 {
 		t.Fatalf("store calls = %d, want 0", store.calls)
 	}
@@ -275,6 +283,14 @@ func TestUploadTicketIsSingleUse(t *testing.T) {
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("second status = %d, want 409", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "request_reference_upload") || !strings.Contains(w.Body.String(), "new upload URL") {
+		t.Fatalf("response does not tell Claude how to recover: %q", w.Body.String())
+	}
+	for _, secret := range []string{ticket.UploadURL, ticket.UploadID, "ref.png", "user-1", "ref_" + ticket.UploadID + ".test-key"} {
+		if strings.Contains(w.Body.String(), secret) {
+			t.Fatalf("response leaks upload input %q: %q", secret, w.Body.String())
+		}
 	}
 	if stored != 1 {
 		t.Fatalf("onStored calls = %d, want 1", stored)

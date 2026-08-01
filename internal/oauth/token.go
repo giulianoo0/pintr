@@ -15,7 +15,7 @@ import (
 )
 
 // The OAuth token endpoint (code + refresh grants) and bearer authentication
-// for the /mcp and /upload endpoints.
+// for the /mcp endpoint.
 
 type ctxKey string
 

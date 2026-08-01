@@ -105,8 +105,8 @@ type request struct {
 
 // GenerateImage runs the generation and returns the PNG bytes.
 // referenceDataURLs must already be resolved to data: URLs by the caller (so
-// the hosted server can forbid file-path references and only accept uploaded
-// handles).
+// the hosted server can forbid file-path references and resolve hosted upload
+// handles or ChatGPT attachments before reaching this layer).
 func GenerateImage(ctx context.Context, accounts []Account, prompt string, referenceDataURLs []string) (Image, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {

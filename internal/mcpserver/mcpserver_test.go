@@ -429,8 +429,13 @@ func TestResolveHostedChatGPTFiles(t *testing.T) {
 		if !strings.Contains(err.Error(), "attachment 1") {
 			t.Fatalf("error does not safely identify attachment: %v", err)
 		}
-		if strings.Contains(err.Error(), signedURL) || strings.Contains(err.Error(), "do-not-print") {
-			t.Fatalf("error leaks signed URL: %v", err)
+		if !strings.Contains(err.Error(), "retry with the attachment") {
+			t.Fatalf("error does not tell ChatGPT how to recover: %v", err)
+		}
+		for _, secret := range []string{signedURL, "do-not-print", "file-private", "private.png", "missing test image"} {
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("error leaks attachment input %q: %v", secret, err)
+			}
 		}
 	})
 }

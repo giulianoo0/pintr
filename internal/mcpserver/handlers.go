@@ -147,7 +147,7 @@ func resolveHostedReferences(ctx context.Context, st *assets.Store, userID strin
 		}
 		img, err := downloader.Download(ctx, file.DownloadURL)
 		if err != nil {
-			return nil, fmt.Errorf("attachment %d download failed", i+1)
+			return nil, fmt.Errorf("attachment %d download failed; retry with the attachment", i+1)
 		}
 		out = append(out, codex.DataURL(img))
 	}

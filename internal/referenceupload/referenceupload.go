@@ -115,6 +115,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	claim, status := m.verify(strings.TrimPrefix(r.URL.Path, "/reference-upload/"))
 	if status != 0 {
+		if status == http.StatusGone {
+			http.Error(w, "upload URL expired; call request_reference_upload for a new upload URL", status)
+			return
+		}
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
@@ -136,7 +140,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ref, err := m.store.PutUploadEncryptedWithID(r.Context(), claim.UserID, claim.UploadID, body)
 	if err != nil {
 		if errors.Is(err, assets.ErrUploadExists) {
-			http.Error(w, "upload ticket already used", http.StatusConflict)
+			http.Error(w, "upload URL already used; call request_reference_upload for a new upload URL", http.StatusConflict)
 			return
 		}
 		http.Error(w, "could not store upload", http.StatusInternalServerError)
