@@ -43,6 +43,8 @@ const (
 	assetTTL  = 24 * time.Hour
 )
 
+var ErrUploadExists = errors.New("reference upload already exists")
+
 type Store struct {
 	client     *s3.Client
 	presign    *s3.PresignClient
@@ -240,6 +242,48 @@ func (a *Store) PutUploadEncrypted(ctx context.Context, userID string, img []byt
 		return "", err
 	}
 	// handle = ref_<id>.<key>; the key never touches the server's storage.
+	return "ref_" + id + "." + base64.RawURLEncoding.EncodeToString(key), nil
+}
+
+// PutUploadEncryptedWithID encrypts an uploaded reference image and creates it
+// under the supplied id. The conditional write makes an upload ticket
+// single-use even when requests race across multiple server instances.
+func (a *Store) PutUploadEncryptedWithID(ctx context.Context, userID, id string, img []byte) (string, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	blob := gcm.Seal(nonce, nonce, img, nil)
+
+	objectKey := "uploads/" + userID + "/" + id
+	if _, err := a.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      &a.bucket,
+		Key:         &objectKey,
+		Body:        bytes.NewReader(blob),
+		ContentType: aws.String("application/octet-stream"),
+		IfNoneMatch: aws.String("*"),
+	}); err != nil {
+		var apiErr interface{ ErrorCode() string }
+		if errors.As(err, &apiErr) {
+			switch apiErr.ErrorCode() {
+			case "PreconditionFailed", "ConditionalRequestConflict":
+				return "", ErrUploadExists
+			}
+		}
+		return "", err
+	}
 	return "ref_" + id + "." + base64.RawURLEncoding.EncodeToString(key), nil
 }
 
