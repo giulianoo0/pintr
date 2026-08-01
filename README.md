@@ -105,7 +105,8 @@ codex, and so on. for scripts and curl, send your access key directly as
 | field | required | what it is |
 | --- | --- | --- |
 | `prompt` | yes | the full image prompt |
-| `reference_images` | no | reference images to anchor a look or character. local stdio: **file paths** (the server reads them off disk — no upload). hosted: `ref_` handles from `POST /upload` (a remote server cannot read your files). base64/`data:` urls are rejected in both modes |
+| `reference_images` | no | reference images to anchor a look or character. **Local stdio only:** pass local file paths; the server runs on your machine and reads them from disk. **Hosted Claude:** pass the returned `ref_` handle described below. |
+| `reference_image_files` | no | **Hosted ChatGPT only:** attached images supplied by ChatGPT. Attach the image to the conversation and call `generate_image`; do not manually construct file descriptors. |
 
 the driver model is fixed to `gpt-5.6-terra` server-side, so a client cannot pass
 a bogus or unexpected model.
@@ -114,6 +115,30 @@ delivery differs by mode:
 
 - **stdio**: the png is written to a pintr-chosen cache path, returned as `saved_path`.
 - **hosted**: see below.
+
+## hosted reference images
+
+Hosted pintr never reads a path from your computer. Use the flow for the client
+you are in:
+
+- **ChatGPT:** attach the image to the conversation, then call
+  `generate_image`. ChatGPT supplies the attachment through
+  `reference_image_files`; do not manually provide file descriptors.
+- **Claude.ai / Claude Desktop:** attach the image, then let Claude call
+  `request_reference_upload`. It obtains a one-time URL and uses its
+  code-execution sandbox to `PUT` the image bytes to pintr over HTTPS. Before
+  the first upload, allow `https://pintr.giuli.dev` in **Settings → Capabilities
+  → Code execution and file creation → Additional allowed domains**. The upload
+  response returns a `ref_` token; Claude passes that token in
+  `generate_image.reference_images` and can reuse it for one hour. The bytes
+  travel from Claude's sandbox to the server over HTTPS, never through
+  model-authored JSON.
+- **Local stdio only:** pass local file paths in `reference_images`. Paths are
+  local-only; they do not work with the hosted server.
+
+Signed upload URLs expire after five minutes. `ref_` tokens expire after one
+hour, and generated outputs expire after 24 hours. Do not inline image bytes,
+base64, or data URLs into a hosted tool call.
 
 ## how the hosted server handles your data
 
@@ -139,12 +164,11 @@ being blunt about what is and isn't stored, because it matters:
   - generated images are **permanently deleted from the bucket 24 hours after
     generation** (the presigned url dies at the same time) — download the png
     if you want to keep it.
-- **reference images**: in hosted mode, upload them to `/upload` and pass the
-  returned `ref_` handle; the server will not read a file path off its own disk
-  and rejects base64 / `data:` urls. uploads are encrypted like generated images
-  (the key lives only inside the handle, never server-side) and are
-  **permanently deleted from the bucket 1 hour after upload** — within that hour
-  the same handle can be reused across calls.
+- **reference images**: hosted uploads are encrypted like generated images (the
+  key lives only inside the returned `ref_` token, never server-side) and are
+  **permanently deleted from the bucket 1 hour after upload**. The dashboard
+  shows their count and lets you purge them; within that hour the same token can
+  be reused across calls.
 - the `generate_image` response gives you a **presigned download url** for the
   ciphertext (valid ~24h) plus the `decryption_key`. to get the png: download
   the url, then AES-256-GCM decrypt with the key — the 12-byte nonce is the

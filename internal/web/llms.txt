@@ -28,7 +28,7 @@ Two modes:
 ## Connecting a client (hosted)
 
 pintr speaks streamable HTTP MCP at `https://pintr.giuli.dev/mcp`. Two auth
-methods, both accepted on `/mcp` and `/upload`:
+methods are accepted on `/mcp`:
 
 1. **MCP OAuth (recommended):** point the client at the URL. On first use it
    gets a 401, discovers the OAuth endpoints, and opens your browser; you log
@@ -153,17 +153,34 @@ scripts/curl send the same header directly.
 Generate an image. Input:
 - `prompt` (string, required) — the full image prompt.
 - `reference_images` (string[], optional) — images to anchor a character or
-  style. How to pass them depends on the mode, because MCP has no mechanism for
-  a remote server to read the client's filesystem:
+  style. How to pass them depends on the mode:
   - **Local stdio server: pass LOCAL FILE PATHS.** The server runs on your
-    machine and reads them directly off disk — never upload or base64-encode
-    anything in this mode.
-  - **Hosted server (pintr.giuli.dev): upload first.** POST the raw bytes to
-    /upload (see below) and pass the returned `ref_...` handle. Uploads are
-    stored encrypted and auto-delete 1 hour after upload; within that hour the
-    same handle can be reused across multiple generate_image calls (upload
-    once, reuse the handle).
-  - In both modes, base64 / `data:` URLs are rejected.
+    machine and reads them directly off disk. This is local-only; hosted pintr
+    cannot read a path from your computer.
+  - **Hosted Claude.ai / Claude Desktop:** pass the `ref_` token returned by
+    `request_reference_upload`. Tokens expire after one hour and can be reused
+    until then.
+- `reference_image_files` (optional, hosted ChatGPT only) — ChatGPT supplies
+  attached images here automatically. Attach the image to the conversation and
+  call `generate_image`; never manually construct file descriptors.
+
+### hosted reference-image flows
+
+- **ChatGPT:** attach an image to the conversation and call `generate_image`.
+  The host fills `reference_image_files`; callers do not supply file metadata.
+- **Claude.ai / Claude Desktop:** attach the image, then call
+  `request_reference_upload` with its metadata. Claude's code-execution sandbox
+  receives a signed URL and `PUT`s the attachment bytes to pintr over HTTPS.
+  Once, add `https://pintr.giuli.dev` under **Settings → Capabilities → Code
+  execution and file creation → Additional allowed domains** so the sandbox can
+  reach pintr. The URL expires after five minutes; its response contains a
+  `ref_` token, which Claude passes to `generate_image.reference_images` for up
+  to one hour. The image bytes go from the sandbox to pintr over HTTPS, never
+  through model-authored JSON.
+- **Local stdio:** local file paths in `reference_images` work only because the
+  server runs on the same machine. They are not a hosted workflow.
+
+Do not embed image bytes, base64, or data URLs in a hosted tool call.
 
 Generation can take up to 420 seconds — a long-running call is not stuck.
 The server streams MCP progress notifications while it works and errors out
@@ -197,13 +214,10 @@ MCP + OAuth (RFC 9728 protected-resource metadata, RFC 8414 AS metadata, RFC
 
 Assets (all content encrypted at rest; keys are returned once and never stored):
 
-- `POST /upload` — bearer-authed. Upload a raw reference image; the server
-  encrypts it, stores only ciphertext, and returns `{ "ref": "ref_<id>.<key>" }`.
-  Pass that handle in `generate_image`; it is reusable until it expires, 1 hour
-  after upload. Body must be an image. Size limit: the hosted server sits
-  behind Cloudflare, which caps request bodies at ~10 MB, so keep uploads under
-  ~10 MB (downscale large references); the server itself caps at 25 MiB. There
-  is no chunked/resumable upload — send the whole file in one request.
+- `request_reference_upload` issues the short-lived, signed HTTPS destination
+  used by Claude's code-execution sandbox. It is an MCP tool flow, not a
+  bearer-authenticated upload API. Signed upload URLs expire after five minutes;
+  the returned `ref_` token is reusable for one hour.
 - `GET /view?o=<objectKey>&k=<key>` — fetches a stored ciphertext, decrypts it
   server-side, and returns the raw image (`image/png`). This is what
   `decrypted_asset_url` points to.
@@ -237,8 +251,9 @@ enables it):
   and pintr itself only ever hold ciphertext they cannot read.
 - Retention: a background janitor permanently deletes expired objects from the
   bucket — reference uploads 1 hour after upload, generated images 24 hours
-  after generation (matching the presigned URL lifetime). Users can also delete
-  everything immediately from the dashboard.
+  after generation (matching the presigned URL lifetime). The dashboard keeps
+  separate generated-image and reference-upload counts and can purge either or
+  both immediately.
 - The encryption protects data at rest (bucket operator, backups, a stolen DB),
   not against a compromised pintr process — pintr necessarily sees each image in
   memory at creation time.

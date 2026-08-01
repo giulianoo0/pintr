@@ -338,6 +338,9 @@ func TestGenerateImageToolPerMode(t *testing.T) {
 	if !strings.Contains(hosted.Description, "reference_image_files") {
 		t.Errorf("hosted description must direct ChatGPT to attachment parameters, got: %s", hosted.Description)
 	}
+	if !strings.Contains(hosted.Description, "Do not manually construct") {
+		t.Errorf("hosted description must tell ChatGPT not to construct file descriptors, got: %s", hosted.Description)
+	}
 	for _, banned := range []string{"curl", "Bearer", "/upload"} {
 		if strings.Contains(hostedRefs, banned) || strings.Contains(hosted.Description, banned) {
 			t.Errorf("hosted generate_image copy must not contain manual upload instruction %q", banned)

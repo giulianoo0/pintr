@@ -106,7 +106,8 @@ const generateDescriptionHosted = generateDescriptionCommon +
 	"(image/png) directly, no decryption needed on your side. (asset_url is the raw encrypted ciphertext and " +
 	"decryption_key is its key, if you'd rather fetch and decrypt it yourself.) " +
 	"Stored images auto-delete 24 hours after generation — download the PNG if you need it longer. " +
-	"In ChatGPT, pass attached reference images directly through reference_image_files. In Claude, call " +
+	"In ChatGPT, attach images to the conversation; the host supplies them through reference_image_files. Do not manually construct " +
+	"file descriptors. In Claude, call " +
 	"request_reference_upload and pass the returned ref_ handle through reference_images. This server is " +
 	"remote and cannot read files off your machine."
 
