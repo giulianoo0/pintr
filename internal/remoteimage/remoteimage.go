@@ -15,6 +15,8 @@ import (
 
 const MaxBytes int64 = 10 << 20
 
+var publicIPv6Prefix = netip.MustParsePrefix("2000::/3")
+
 var nonPublicPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
@@ -31,6 +33,7 @@ var nonPublicPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("2001::/23"),
 	netip.MustParsePrefix("2001:db8::/32"),
 	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("3fff::/20"),
 	netip.MustParsePrefix("fec0::/10"),
 }
 
@@ -173,6 +176,9 @@ func validateAddrs(addrs []netip.Addr) error {
 			return errors.New("remote destination is not public")
 		}
 		addr = addr.Unmap()
+		if addr.Is6() && !publicIPv6Prefix.Contains(addr) {
+			return errors.New("remote destination is not public")
+		}
 		if !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() ||
 			addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
 			return errors.New("remote destination is not public")

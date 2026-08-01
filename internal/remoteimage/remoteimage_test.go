@@ -149,6 +149,17 @@ func TestValidateURLAcceptsPublicHTTPSHost(t *testing.T) {
 	}
 }
 
+func TestValidateURLRejectsNonPublicIPv6Allocations(t *testing.T) {
+	for _, raw := range []string{
+		"https://[3fff::1]/a.png",
+		"https://[5f00::1]/a.png",
+	} {
+		if err := validateURL(raw); err == nil {
+			t.Errorf("validateURL(%q) succeeded", raw)
+		}
+	}
+}
+
 func TestValidateIPsRejectsPrivateDestinations(t *testing.T) {
 	for _, raw := range []string{
 		"0.0.0.1",
@@ -182,6 +193,14 @@ func TestValidateIPsAcceptsPublicDestinations(t *testing.T) {
 	}
 }
 
+func TestValidateIPsRejectsNonPublicIPv6Allocations(t *testing.T) {
+	for _, raw := range []string{"3fff::1", "5f00::1"} {
+		if err := validateIPs([]net.IPAddr{{IP: net.ParseIP(raw)}}); err == nil {
+			t.Errorf("validateIPs(%s) succeeded", raw)
+		}
+	}
+}
+
 func TestProductionClientValidatesEveryRedirectTarget(t *testing.T) {
 	d := New()
 	for _, raw := range []string{
@@ -210,6 +229,22 @@ func TestProductionClientAcceptsPublicHTTPSRedirect(t *testing.T) {
 	}
 	if err := New().client.CheckRedirect(&http.Request{URL: target}, nil); err != nil {
 		t.Fatalf("CheckRedirect() error = %v", err)
+	}
+}
+
+func TestProductionClientRejectsRedirectsToNonPublicIPv6Allocations(t *testing.T) {
+	d := New()
+	for _, raw := range []string{
+		"https://[3fff::1]/a.png",
+		"https://[5f00::1]/a.png",
+	} {
+		target, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.client.CheckRedirect(&http.Request{URL: target}, nil); err == nil {
+			t.Errorf("CheckRedirect(%q) succeeded", raw)
+		}
 	}
 }
 
