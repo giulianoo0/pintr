@@ -33,9 +33,17 @@ const (
 // where the server writes) — delivery is decided by the server per mode. The
 // reference_images description is mode-specific and set in generateImageTool;
 // the tag below is only a fallback.
+type referenceImageFile struct {
+	DownloadURL string `json:"download_url"`
+	FileID      string `json:"file_id"`
+	MIMEType    string `json:"mime_type,omitempty"`
+	FileName    string `json:"file_name,omitempty"`
+}
+
 type generateImageArgs struct {
-	Prompt          string   `json:"prompt" jsonschema:"the full image prompt to render"`
-	ReferenceImages []string `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style"`
+	Prompt              string               `json:"prompt" jsonschema:"the full image prompt to render"`
+	ReferenceImages     []string             `json:"reference_images,omitempty" jsonschema:"optional reference images to anchor a character or style"`
+	ReferenceImageFiles []referenceImageFile `json:"reference_image_files,omitempty" jsonschema:"ChatGPT-provided attached reference images"`
 }
 
 type generateImageResult struct {
@@ -83,8 +91,9 @@ const generateDescriptionHosted = generateDescriptionCommon +
 	"(image/png) directly, no decryption needed on your side. (asset_url is the raw encrypted ciphertext and " +
 	"decryption_key is its key, if you'd rather fetch and decrypt it yourself.) " +
 	"Stored images auto-delete 24 hours after generation — download the PNG if you need it longer. " +
-	"For reference_images, upload the raw bytes to /upload first and pass the returned ref_ handle " +
-	"(see the reference_images field); this server is remote and cannot read files off your machine."
+	"In ChatGPT, pass attached reference images directly through reference_image_files. In Claude, call " +
+	"request_reference_upload and pass the returned ref_ handle through reference_images. This server is " +
+	"remote and cannot read files off your machine."
 
 const refsDescriptionStdio = "optional reference images to anchor a character or style. Pass LOCAL FILE " +
 	"PATHS (png/jpeg/webp/gif) — this server runs alongside you and reads them directly off disk. " +
@@ -93,13 +102,9 @@ const refsDescriptionStdio = "optional reference images to anchor a character or
 const refsDescriptionHosted = "optional reference images to anchor a character or style, passed as ref_ " +
 	"upload handles. This server is remote: it cannot read files off your machine, so local paths do not " +
 	"work here. Do NOT base64-encode, inline, or pass data: URLs — that bloats context and is rejected. " +
-	"Instead POST the RAW image bytes to the /upload endpoint (e.g. https://pintr.giuli.dev/upload) with " +
-	"your bearer token, e.g.: curl -s -X POST https://pintr.giuli.dev/upload -H \"Authorization: Bearer " +
-	"<token-or-pintr_key>\" --data-binary @image.png ; it returns {\"ref\":\"ref_...\"}. Pass those ref_... " +
-	"handles here. Keep each upload under ~10 MB (Cloudflare caps request bodies) — downscale large " +
-	"references; there is no chunked upload. Uploads are stored encrypted and auto-delete after 1 hour, so " +
-	"the same ref_ handle can be reused across multiple generate_image calls within that window — upload " +
-	"once per reference, reuse the handle."
+	"In Claude, call request_reference_upload and pass its ref_ handle here. Uploads auto-delete after 1 " +
+	"hour, so the same handle can be reused across multiple generate_image calls within that window. In " +
+	"ChatGPT, pass attachments directly through reference_image_files instead."
 
 // generateImageTool builds the generate_image tool definition for one mode,
 // overriding the reference_images schema description with the mode's text.
@@ -111,9 +116,15 @@ func generateImageTool(hosted bool) *mcp.Tool {
 	description, refsDescription := generateDescriptionStdio, refsDescriptionStdio
 	if hosted {
 		description, refsDescription = generateDescriptionHosted, refsDescriptionHosted
+	} else {
+		delete(schema.Properties, "reference_image_files")
 	}
 	schema.Properties["reference_images"].Description = refsDescription
-	return &mcp.Tool{Name: "generate_image", Description: description, InputSchema: schema}
+	tool := &mcp.Tool{Name: "generate_image", Description: description, InputSchema: schema}
+	if hosted {
+		tool.Meta = mcp.Meta{"openai/fileParams": []string{"reference_image_files"}}
+	}
+	return tool
 }
 
 // New builds the MCP server with the two tools bound to the given handlers.

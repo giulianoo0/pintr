@@ -17,6 +17,7 @@ import (
 	"github.com/giulianoo0/pintr/internal/codex"
 	"github.com/giulianoo0/pintr/internal/mcpserver"
 	"github.com/giulianoo0/pintr/internal/oauth"
+	"github.com/giulianoo0/pintr/internal/remoteimage"
 	"github.com/giulianoo0/pintr/internal/store"
 	"github.com/giulianoo0/pintr/internal/turnstile"
 	"github.com/giulianoo0/pintr/internal/web"
@@ -88,7 +89,7 @@ func ServeHTTP(addr string) {
 	provider.LookupSession = webHandlers.SessionFromRequest
 	provider.RenderConsent = web.RenderConsent
 
-	hostedGenerate := mcpserver.HostedGenerate(st, assetStore, tracker, publicURL)
+	hostedGenerate := mcpserver.HostedGenerate(st, assetStore, tracker, publicURL, remoteimage.New())
 	hostedUsage := mcpserver.HostedUsage(st, tracker)
 
 	// Stateless: getServer runs per request, so the MCP server is always bound

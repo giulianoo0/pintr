@@ -81,14 +81,16 @@ func StdioUsage(authStore *codex.AuthStore) UsageFunc {
 
 // --- hosted mode handlers (the authenticated user's linked accounts) ---
 
-// resolveHostedReferences turns each reference into a data: URL. On the
-// hosted server the only accepted reference is a "ref_" upload handle: it's
-// fetched and decrypted (it stays reusable until it expires, one hour after
-// upload). Inline base64 / data: URLs and file paths are rejected — a remote
-// server can't read the caller's filesystem, and inlining bloats context; the
-// caller must upload the bytes to /upload first.
-func resolveHostedReferences(ctx context.Context, st *assets.Store, userID string, refs []string) ([]string, error) {
-	out := make([]string, 0, len(refs))
+type referenceDownloader interface {
+	Download(context.Context, string) ([]byte, error)
+}
+
+// resolveHostedReferences turns hosted references into data: URLs. Existing
+// ref_ handles are resolved first and remain reusable until they expire. Any
+// ChatGPT-provided attachments are downloaded directly into memory and
+// appended in argument order; their bytes are never persisted.
+func resolveHostedReferences(ctx context.Context, st *assets.Store, userID string, refs []string, files []referenceImageFile, downloader referenceDownloader) ([]string, error) {
+	out := make([]string, 0, len(refs)+len(files))
 	for _, ref := range refs {
 		ref = strings.TrimSpace(ref)
 		if !strings.HasPrefix(ref, "ref_") {
@@ -99,6 +101,22 @@ func resolveHostedReferences(ctx context.Context, st *assets.Store, userID strin
 			// Log the id only — the part after the dot is the decryption key.
 			log.Printf("[generate_image] reference %s failed: %v", refID(ref), err)
 			return nil, fmt.Errorf("reference %s: %w (uploads expire 1 hour after upload — re-upload to /upload and retry with the new handle)", refID(ref), err)
+		}
+		out = append(out, codex.DataURL(img))
+	}
+	for i, file := range files {
+		if strings.TrimSpace(file.DownloadURL) == "" {
+			return nil, fmt.Errorf("attachment %d is missing download_url", i+1)
+		}
+		if strings.TrimSpace(file.FileID) == "" {
+			return nil, fmt.Errorf("attachment %d is missing file_id", i+1)
+		}
+		if downloader == nil {
+			return nil, fmt.Errorf("attachment %d cannot be downloaded", i+1)
+		}
+		img, err := downloader.Download(ctx, file.DownloadURL)
+		if err != nil {
+			return nil, fmt.Errorf("attachment %d download failed", i+1)
 		}
 		out = append(out, codex.DataURL(img))
 	}
@@ -157,7 +175,7 @@ func HostedUsage(st *store.Store, tracker *analytics.Tracker) UsageFunc {
 // encrypts the PNG under a one-time key, uploads the ciphertext, and returns
 // a presigned download URL plus the key. It never touches the local
 // filesystem or a caller-chosen path.
-func HostedGenerate(st *store.Store, assetStore *assets.Store, tracker *analytics.Tracker, publicURL string) GenerateFunc {
+func HostedGenerate(st *store.Store, assetStore *assets.Store, tracker *analytics.Tracker, publicURL string, downloader referenceDownloader) GenerateFunc {
 	return func(ctx context.Context, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 		u, ok := oauth.UserFromContext(ctx)
 		if !ok {
@@ -166,7 +184,7 @@ func HostedGenerate(st *store.Store, assetStore *assets.Store, tracker *analytic
 		if assetStore == nil {
 			return nil, generateImageResult{}, errors.New("image storage is not configured on this server (set PINTR_S3_*)")
 		}
-		refs, err := resolveHostedReferences(ctx, assetStore, u.ID, args.ReferenceImages)
+		refs, err := resolveHostedReferences(ctx, assetStore, u.ID, args.ReferenceImages, args.ReferenceImageFiles, downloader)
 		if err != nil {
 			return nil, generateImageResult{}, err
 		}
