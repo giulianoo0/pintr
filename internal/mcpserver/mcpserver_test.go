@@ -188,9 +188,9 @@ func TestReferenceUploadRegistrationIsHostedOnly(t *testing.T) {
 		server *mcp.Server
 		want   bool
 	}{
-		{name: "hosted", server: New(true, generate, usage, upload), want: true},
-		{name: "stdio", server: New(false, generate, usage, upload), want: false},
-		{name: "hosted without storage", server: New(true, generate, usage, nil), want: false},
+		{name: "hosted", server: New(true, generate, usage, upload, nil), want: true},
+		{name: "stdio", server: New(false, generate, usage, upload, nil), want: false},
+		{name: "hosted without storage", server: New(true, generate, usage, nil, nil), want: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			serverTransport, clientTransport := mcp.NewInMemoryTransports()
@@ -231,7 +231,7 @@ func TestReferenceUploadRegisteredToolCallsHostedHandler(t *testing.T) {
 	usage := func(context.Context, getUsageArgs) (*mcp.CallToolResult, usageResult, error) {
 		return nil, usageResult{}, nil
 	}
-	server := New(true, generate, usage, HostedReferenceUpload(issuer))
+	server := New(true, generate, usage, HostedReferenceUpload(issuer), nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
 	if err != nil {

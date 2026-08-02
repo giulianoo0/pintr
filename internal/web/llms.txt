@@ -200,6 +200,60 @@ images are permanently deleted from storage 24 hours after generation —
 download the PNG if you need it longer.
 Result (stdio): `saved_path` plus the same metadata.
 
+### generate_video (hosted only)
+Generate a video with Runway, using the Runway account connected in the
+dashboard. Requires a connected account: dashboard → runway tab → paste the
+`RW_USER_TOKEN` value from a logged-in `app.runwayml.com` tab (devtools →
+Application → Local storage). Runway has no OAuth for these endpoints, and the
+token expires after 30 days with no refresh — reconnect when it lapses.
+
+Input:
+- `prompt` (string) — the full video prompt. Required unless resuming.
+- `reference_images` (string[], optional) — `ref_` handles from
+  `request_reference_upload`, same flow as `generate_image`. Address them from
+  the prompt as `@Image1`, `@Image2`, … matching the order given here.
+- `reference_image_files` (optional, hosted ChatGPT only) — attachments, as above.
+- `first_frame_image` / `end_frame_image` (optional) — `ref_` handles pinning
+  the exact opening and closing image. `end_frame_image` requires
+  `first_frame_image`.
+- `model` (optional) — defaults to `seedance_2`. Allowlisted video models only.
+- `duration_seconds` (1–12, default 5), `aspect_ratio` (default `16:9`),
+  `resolution` (default `720p`), `audio` (default true).
+- `task_id` (optional) — resume a generation started by an earlier call. Pass it
+  alone, with no prompt.
+
+### references vs keyframes
+
+These are two different mechanisms and models differ in which they take:
+
+- **References** (`reference_images`) anchor a character, place or style, and
+  are addressed from the prompt as `@Image1`, `@Image2`, …. Only the
+  `seedance_2` family accepts them (up to 9).
+- **Keyframes** (`first_frame_image`, `end_frame_image`) pin the exact first and
+  last image of the clip. Most other models take keyframes instead of
+  references; some (`gen4`, `gen4_turbo`, `kling_3_0_turbo`) take a first frame
+  only and reject an end frame.
+- `seedance_2` accepts both at once, which is why it is the default.
+
+Under the hood both travel in Runway's single `referenceImages` array;
+keyframes carry a `first_frame`/`end_frame` type tag and references carry none.
+pintr validates the combination against the chosen model before submitting and
+says which mechanism that model supports if you pass the wrong one.
+
+Generations always run in Runway's **Explore mode**: they cost no credits, but
+they queue, often for several minutes, and Runway runs only **one at a time per
+account**. A call polls for up to 10 minutes and then returns `status` of
+`queued` or `running` together with a `task_id`. That is not a failure. Call
+`generate_video` again with only that `task_id` until `status` is `succeeded` or
+`failed`; do not start a second generation while one is pending.
+
+Result: `status`, `task_id`, `progress_percent`, `message`, and on success
+`asset_url` (presigned ciphertext), `decrypted_asset_url` (open in a browser to
+watch the decrypted MP4), `decryption_key`, `mime_type`, `model`, `duration_ms`
+and `size_bytes`. Always open `decrypted_asset_url` to view the result. Stored
+videos are permanently deleted 24 hours after generation — download the MP4 if
+you need it longer.
+
 ### get_usage
 Return the remaining Codex rate limits for the linked account(s): the 5h, weekly
 and monthly windows (only the ones OpenAI currently exposes), each with used and
@@ -225,8 +279,8 @@ Assets (all content encrypted at rest; keys are returned once and never stored):
   bearer-authenticated upload API. Signed upload URLs expire after five minutes;
   the returned `ref_` token is reusable for one hour.
 - `GET /view?o=<objectKey>&k=<key>` — fetches a stored ciphertext, decrypts it
-  server-side, and returns the raw image (`image/png`). This is what
-  `decrypted_asset_url` points to.
+  server-side, and returns the raw media: `image/png` for `generate_image`,
+  `video/mp4` for `generate_video`. This is what `decrypted_asset_url` points to.
 
 Dashboard (browser, session cookie + CSRF; signup/login and the linking/consent
 forms may additionally require a Cloudflare Turnstile check when the operator
@@ -235,9 +289,12 @@ enables it):
 - `GET /` — landing (redirects to /dashboard when signed in).
 - `GET|POST /signup` — create an account (no key is minted at signup).
 - `GET|POST /login`, `POST /logout` — session auth.
-- `GET /dashboard` — manage linked ChatGPT accounts (with rate-limit bars),
-  access keys, stored assets, and account deletion.
+- `GET /dashboard` — manage linked ChatGPT accounts (with rate-limit bars), the
+  connected Runway account, access keys, stored assets, and account deletion.
 - `POST /link/start`, `POST /link/finish` — link a ChatGPT account (browser paste flow).
+- `POST /runway/connect`, `POST /runway/disconnect` — connect or remove the
+  Runway account used by `generate_video` (browser paste flow; the token is
+  validated against Runway before it is stored, encrypted).
 - `POST /accounts/default`, `POST /accounts/remove` — manage linked accounts.
 - `POST /keys/create`, `POST /keys/remove` — personal access keys.
 - `POST /tokens/revoke` — invalidate all issued OAuth tokens (per-user kill switch).

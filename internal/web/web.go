@@ -52,6 +52,8 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/link/finish", h.handleLinkFinish)
 	mux.HandleFunc("/accounts/default", h.handleAccountDefault)
 	mux.HandleFunc("/accounts/remove", h.handleAccountRemove)
+	mux.HandleFunc("/runway/connect", h.handleRunwayConnect)
+	mux.HandleFunc("/runway/disconnect", h.handleRunwayDisconnect)
 	mux.HandleFunc("/keys/create", h.handleKeyCreate)
 	mux.HandleFunc("/keys/remove", h.handleKeyRemove)
 	mux.HandleFunc("/tokens/revoke", h.handleRevokeTokens)

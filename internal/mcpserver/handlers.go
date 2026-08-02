@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/giulianoo0/pintr/internal/oauth"
 	"github.com/giulianoo0/pintr/internal/random"
 	"github.com/giulianoo0/pintr/internal/referenceupload"
+	"github.com/giulianoo0/pintr/internal/runway"
 	"github.com/giulianoo0/pintr/internal/store"
 )
 
@@ -126,6 +129,21 @@ func HostedReferenceUpload(issuer uploadIssuer) ReferenceUploadFunc {
 // ChatGPT-provided attachments are downloaded directly into memory and
 // appended in argument order; their bytes are never persisted.
 func resolveHostedReferences(ctx context.Context, st referenceFetcher, userID string, refs []string, files []referenceImageFile, downloader referenceDownloader) ([]string, error) {
+	images, err := resolveHostedReferenceImages(ctx, st, userID, refs, files, downloader)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(images))
+	for _, img := range images {
+		out = append(out, codex.DataURL(img))
+	}
+	return out, nil
+}
+
+// resolveHostedReferenceImages does the actual resolution and returns raw
+// bytes. Codex wants them as data: URLs; Runway uploads the bytes into the
+// user's own workspace, so both callers share this and wrap as they need.
+func resolveHostedReferenceImages(ctx context.Context, st referenceFetcher, userID string, refs []string, files []referenceImageFile, downloader referenceDownloader) ([][]byte, error) {
 	if len(refs) > hostedMaxReferenceImages || len(files) > hostedMaxReferenceImages ||
 		len(refs) > hostedMaxReferenceImages-len(files) {
 		return nil, fmt.Errorf("hosted generation accepts at most %d total reference images", hostedMaxReferenceImages)
@@ -141,7 +159,7 @@ func resolveHostedReferences(ctx context.Context, st referenceFetcher, userID st
 	if len(files) > 0 && downloader == nil {
 		return nil, errors.New("attachments cannot be downloaded")
 	}
-	out := make([]string, 0, len(refs)+len(files))
+	out := make([][]byte, 0, len(refs)+len(files))
 	totalBytes := 0
 	for i, ref := range refs {
 		ref = strings.TrimSpace(ref)
@@ -172,7 +190,7 @@ func resolveHostedReferences(ctx context.Context, st referenceFetcher, userID st
 	return out, nil
 }
 
-func appendHostedReference(out *[]string, totalBytes *int, img []byte, label string) error {
+func appendHostedReference(out *[][]byte, totalBytes *int, img []byte, label string) error {
 	if len(img) > hostedMaxReferenceImageBytes {
 		return fmt.Errorf("%s exceeds the 10 MiB decoded size limit", label)
 	}
@@ -180,7 +198,7 @@ func appendHostedReference(out *[]string, totalBytes *int, img []byte, label str
 		return errors.New("hosted reference images exceed the 40 MiB total decoded size limit")
 	}
 	*totalBytes += len(img)
-	*out = append(*out, codex.DataURL(img))
+	*out = append(*out, img)
 	return nil
 }
 
@@ -264,6 +282,205 @@ func HostedGenerate(st *store.Store, assetStore *assets.Store, tracker *analytic
 		}
 		return callResult, result, nil
 	}
+}
+
+// --- generate_video (Runway) ---
+
+// videoPollReserve is held back from the tool's deadline so that when a
+// generation finishes near the limit there is still time to download it,
+// encrypt it and store it. Without it a video could complete on Runway's side
+// and still be reported as queued.
+const videoPollReserve = 90 * time.Second
+
+// HostedGenerateVideo submits a Runway generation (or resumes one by task id),
+// waits as long as the call's deadline allows, and on success re-hosts the MP4
+// the same way generated images are: encrypted under a one-time key that is
+// returned once and never stored.
+func HostedGenerateVideo(st *store.Store, assetStore *assets.Store, tracker *analytics.Tracker, publicURL string, downloader referenceDownloader) GenerateVideoFunc {
+	return func(ctx context.Context, args generateVideoArgs) (*mcp.CallToolResult, generateVideoResult, error) {
+		u, ok := oauth.UserFromContext(ctx)
+		if !ok {
+			return nil, generateVideoResult{}, errors.New("unauthenticated")
+		}
+		if assetStore == nil {
+			return nil, generateVideoResult{}, errors.New("video storage is not configured on this server (set PINTR_S3_*)")
+		}
+		token, account, err := st.LoadRunwayToken(ctx, u.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNoRunwayAccount) {
+				return nil, generateVideoResult{}, errors.New("no runway account connected — open the pintr dashboard, go to the runway tab, and paste your RW_USER_TOKEN")
+			}
+			return nil, generateVideoResult{}, err
+		}
+		client := runway.NewClient(token, account.TeamID)
+
+		startedAt := time.Now()
+		model := strings.TrimSpace(args.Model)
+		if model == "" {
+			model = runway.DefaultModel
+		}
+
+		task, err := startOrResumeVideo(ctx, client, st, assetStore, u.ID, args, downloader)
+		if err != nil {
+			return nil, generateVideoResult{}, err
+		}
+
+		// Poll under a shortened deadline so the success path still has time to
+		// fetch and store the result.
+		pollCtx, cancel := pollContext(ctx)
+		defer cancel()
+		task, err = client.WaitForTask(pollCtx, task.ID, nil)
+		if err != nil {
+			return nil, generateVideoResult{}, err
+		}
+
+		result := generateVideoResult{
+			TaskID:          task.ID,
+			Model:           model,
+			ProgressPercent: int(math.Round(task.Progress * 100)),
+			DurationMs:      time.Since(startedAt).Milliseconds(),
+		}
+
+		switch {
+		case task.Status == runway.StatusSucceeded:
+			if task.VideoURL == "" {
+				return nil, generateVideoResult{}, errors.New("runway reported success but returned no video")
+			}
+			video, mimeType, err := client.DownloadVideo(ctx, task.VideoURL)
+			if err != nil {
+				return nil, generateVideoResult{}, err
+			}
+			stored, err := assetStore.PutEncrypted(ctx, u.ID, video)
+			if err != nil {
+				return nil, generateVideoResult{}, fmt.Errorf("storing video: %w", err)
+			}
+			tracker.Event("generate_video")
+			result.Status = "succeeded"
+			result.AssetURL = stored.URL
+			result.DecryptedAssetURL = viewURL(publicURL, stored.ObjectKey, stored.KeyB64)
+			result.DecryptionKey = stored.KeyB64
+			result.MimeType = mimeType
+			result.SizeBytes = len(video)
+			result.ProgressPercent = 100
+			result.Message = fmt.Sprintf("Video generated (%d bytes). Open decrypted_asset_url to watch it — "+
+				"it returns the decrypted MP4 directly, decrypted server-side. asset_url is the raw encrypted "+
+				"ciphertext; decryption_key is its AES-256-GCM key, returned only here and never stored. The "+
+				"stored video auto-deletes in 24 hours — download it now if you need it longer.", len(video))
+		case task.Status == runway.StatusFailed || task.Status == runway.StatusCancelled:
+			result.Status = "failed"
+			result.Message = "Runway reported the generation as " + strings.ToLower(task.Status) + "."
+			if task.Error != "" {
+				result.Message += " " + task.Error
+			}
+		default:
+			result.Status = "running"
+			if task.Queued() {
+				result.Status = "queued"
+			}
+			result.Message = fmt.Sprintf("Still %s on Runway after %s — this is normal for Explore mode, not a "+
+				"failure. Call generate_video again with task_id %q and no prompt to keep waiting. Do NOT start "+
+				"another generation: Explore mode runs one at a time.",
+				result.Status, time.Since(startedAt).Round(time.Second), task.ID)
+		}
+
+		callResult, err := hostedVideoCallResult(result)
+		if err != nil {
+			return nil, generateVideoResult{}, err
+		}
+		return callResult, result, nil
+	}
+}
+
+// startOrResumeVideo either picks up the task named in task_id or uploads the
+// references and submits a new generation.
+func startOrResumeVideo(ctx context.Context, client *runway.Client, st *store.Store, assetStore *assets.Store, userID string, args generateVideoArgs, downloader referenceDownloader) (runway.Task, error) {
+	if taskID := strings.TrimSpace(args.TaskID); taskID != "" {
+		return client.GetTask(ctx, taskID)
+	}
+	if strings.TrimSpace(args.Prompt) == "" {
+		return runway.Task{}, errors.New("prompt is required to start a generation (or pass task_id to resume one)")
+	}
+
+	images, err := resolveHostedReferenceImages(ctx, assetStore, userID, args.ReferenceImages, args.ReferenceImageFiles, downloader)
+	if err != nil {
+		return runway.Task{}, err
+	}
+	references := make([]runway.Asset, 0, len(images))
+	for i, img := range images {
+		asset, err := client.UploadReference(ctx, fmt.Sprintf("reference-%d", i+1), img)
+		if err != nil {
+			return runway.Task{}, fmt.Errorf("uploading reference image %d to runway: %w", i+1, err)
+		}
+		references = append(references, asset)
+	}
+
+	firstFrame, err := uploadKeyframe(ctx, client, assetStore, userID, args.FirstFrameImage, "first_frame_image", downloader)
+	if err != nil {
+		return runway.Task{}, err
+	}
+	endFrame, err := uploadKeyframe(ctx, client, assetStore, userID, args.EndFrameImage, "end_frame_image", downloader)
+	if err != nil {
+		return runway.Task{}, err
+	}
+
+	audio := true
+	if args.Audio != nil {
+		audio = *args.Audio
+	}
+	return client.CreateVideo(ctx, runway.VideoRequest{
+		Prompt:          args.Prompt,
+		Model:           args.Model,
+		DurationSeconds: args.DurationSeconds,
+		AspectRatio:     args.AspectRatio,
+		Resolution:      args.Resolution,
+		GenerateAudio:   audio,
+		References:      references,
+		FirstFrame:      firstFrame,
+		EndFrame:        endFrame,
+	})
+}
+
+// uploadKeyframe resolves one keyframe handle and publishes it to Runway.
+// Keyframes go through the same ref_ upload path as references, so the same
+// size and expiry rules apply.
+func uploadKeyframe(ctx context.Context, client *runway.Client, st referenceFetcher, userID, handle, field string, downloader referenceDownloader) (*runway.Asset, error) {
+	if strings.TrimSpace(handle) == "" {
+		return nil, nil
+	}
+	images, err := resolveHostedReferenceImages(ctx, st, userID, []string{handle}, nil, downloader)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", field, err)
+	}
+	asset, err := client.UploadReference(ctx, field+".png", images[0])
+	if err != nil {
+		return nil, fmt.Errorf("uploading %s to runway: %w", field, err)
+	}
+	return &asset, nil
+}
+
+// pollContext shortens ctx by videoPollReserve, leaving room to download and
+// store a video that finishes right at the deadline.
+func pollContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	shortened := deadline.Add(-videoPollReserve)
+	if !shortened.After(time.Now()) {
+		return context.WithCancel(ctx)
+	}
+	return context.WithDeadline(ctx, shortened)
+}
+
+func hostedVideoCallResult(result generateVideoResult) (*mcp.CallToolResult, error) {
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("encoding result: %w", err)
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		&mcp.TextContent{Text: result.Message},
+		&mcp.TextContent{Text: string(resultJSON)},
+	}}, nil
 }
 
 // hostedCallResult builds the unstructured content for a hosted generation.

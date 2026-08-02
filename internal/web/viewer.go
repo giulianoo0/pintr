@@ -36,7 +36,7 @@ func (h *Handlers) handleView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	png, err := h.assets.FetchAndDecrypt(r.Context(), objectKey, keyB64)
+	asset, err := h.assets.FetchAndDecrypt(r.Context(), objectKey, keyB64)
 	if err != nil {
 		// Same response whether the object is missing or the key is wrong, so
 		// the endpoint isn't an oracle.
@@ -44,18 +44,23 @@ func (h *Handlers) handleView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only ever serve image types on this origin. Generated assets are always
-	// images, but if decrypted bytes were somehow HTML-shaped, sniffing them
-	// into text/html here would be stored XSS on the app domain.
-	contentType := http.DetectContentType(png)
-	if !strings.HasPrefix(contentType, "image/") {
+	// Only ever serve media types on this origin — images from generate_image,
+	// video from generate_video. If decrypted bytes were somehow HTML-shaped,
+	// sniffing them into text/html here would be stored XSS on the app domain.
+	contentType := http.DetectContentType(asset)
+	event := "image_view"
+	switch {
+	case strings.HasPrefix(contentType, "image/"):
+	case strings.HasPrefix(contentType, "video/"):
+		event = "video_view"
+	default:
 		contentType = "application/octet-stream"
 		w.Header().Set("Content-Disposition", "attachment; filename=asset")
 	}
-	h.analytics.Event("image_view")
+	h.analytics.Event(event)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'")
-	_, _ = w.Write(png)
+	_, _ = w.Write(asset)
 }

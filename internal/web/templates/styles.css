@@ -13,18 +13,23 @@ main{width:100%;max-width:64rem;margin:0 auto;padding:1.4rem 1.5rem 3rem;flex:1 
 .hero{margin:1.5rem 0 .5rem}
 .hero-title{font-size:2rem;font-weight:750;letter-spacing:-.02em;margin:0 0 .6rem;line-height:1.15}
 input.dtab{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
-.tabs{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;width:22rem;max-width:100%;background:#141416;border:1px solid #262626;border-radius:9px;padding:3px}
-.tabs .slider{position:absolute;top:3px;left:3px;bottom:3px;width:calc((100% - 6px)/4);background:#2b6cb0;border-radius:6px;transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:0}
-.tabs label{position:relative;z-index:1;flex:1;text-align:center;padding:.34rem .8rem;font-size:.85rem;color:#c9c9c9;cursor:pointer;white-space:nowrap;border-radius:6px}
+.tabs{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;width:26rem;max-width:100%;background:#141416;border:1px solid #262626;border-radius:9px;padding:3px}
+.tabs .slider{position:absolute;top:3px;left:3px;bottom:3px;width:calc((100% - 6px)/5);background:#2b6cb0;border-radius:6px;transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:0}
+.tabs label{position:relative;z-index:1;flex:1;text-align:center;padding:.34rem .6rem;font-size:.85rem;color:#c9c9c9;cursor:pointer;white-space:nowrap;border-radius:6px}
 .tabs label:hover{color:#fff}
 #t-accounts:checked~header .slider{transform:translateX(0)}
-#t-keys:checked~header .slider{transform:translateX(100%)}
-#t-connect:checked~header .slider{transform:translateX(200%)}
-#t-data:checked~header .slider{transform:translateX(300%)}
-#t-accounts:checked~header label[for=t-accounts],#t-keys:checked~header label[for=t-keys],#t-connect:checked~header label[for=t-connect],#t-data:checked~header label[for=t-data]{color:#fff}
-#t-accounts:focus-visible~header label[for=t-accounts],#t-keys:focus-visible~header label[for=t-keys],#t-connect:focus-visible~header label[for=t-connect],#t-data:focus-visible~header label[for=t-data]{outline:2px solid #fff;outline-offset:-2px}
+#t-runway:checked~header .slider{transform:translateX(100%)}
+#t-keys:checked~header .slider{transform:translateX(200%)}
+#t-connect:checked~header .slider{transform:translateX(300%)}
+#t-data:checked~header .slider{transform:translateX(400%)}
+#t-accounts:checked~header label[for=t-accounts],#t-runway:checked~header label[for=t-runway],#t-keys:checked~header label[for=t-keys],#t-connect:checked~header label[for=t-connect],#t-data:checked~header label[for=t-data]{color:#fff}
+#t-accounts:focus-visible~header label[for=t-accounts],#t-runway:focus-visible~header label[for=t-runway],#t-keys:focus-visible~header label[for=t-keys],#t-connect:focus-visible~header label[for=t-connect],#t-data:focus-visible~header label[for=t-data]{outline:2px solid #fff;outline-offset:-2px}
 .tabpane{display:none}
-#t-accounts:checked~main #p-accounts,#t-keys:checked~main #p-keys,#t-connect:checked~main #p-connect,#t-data:checked~main #p-data{display:block}
+#t-accounts:checked~main #p-accounts,#t-runway:checked~main #p-runway,#t-keys:checked~main #p-keys,#t-connect:checked~main #p-connect,#t-data:checked~main #p-data{display:block}
+.steps{margin:.6rem 0 .8rem;padding-left:1.2rem;color:#c9c9c9;font-size:.9rem}
+.steps li{margin:.25rem 0}
+/* model ids are single tokens; wrap between them, never through one */
+.modellist code{white-space:nowrap}
 .logout{display:inline;margin:0}
 .whoami{color:#888;font-size:.85rem}
 .email{filter:blur(4.5px);transition:filter .15s ease;cursor:default}

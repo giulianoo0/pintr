@@ -6,13 +6,14 @@
 
 {{define "dashboard"}}{{template "head" .}}
 <input class="dtab" type="radio" name="dtab" id="t-accounts" checked>
+<input class="dtab" type="radio" name="dtab" id="t-runway">
 <input class="dtab" type="radio" name="dtab" id="t-keys">
 <input class="dtab" type="radio" name="dtab" id="t-connect">
 <input class="dtab" type="radio" name="dtab" id="t-data">
 <header>{{template "logo"}}
-<nav class="tabs" aria-label="dashboard sections"><span class="slider"></span><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label></nav>
+<nav class="tabs" aria-label="dashboard sections"><span class="slider"></span><label for="t-accounts">accounts</label><label for="t-runway">runway</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label></nav>
 <form method="post" action="/logout" class="logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form>{{template "menubtn"}}</header>
-<div class="menu" id="site-menu"><nav class="menu-items" aria-label="mobile"><label for="t-accounts">accounts</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label><a href="/llms.txt">llms.txt</a><form method="post" action="/logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form></nav></div>
+<div class="menu" id="site-menu"><nav class="menu-items" aria-label="mobile"><label for="t-accounts">accounts</label><label for="t-runway">runway</label><label for="t-keys">keys</label><label for="t-connect">connect</label><label for="t-data">data</label><a href="/llms.txt">llms.txt</a><form method="post" action="/logout">{{template "csrf" .CSRF}}<button type="submit" class="link">log out</button></form></nav></div>
 <main>
 <h1 style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0">pintr dashboard</h1>
 <section class="tabpane" id="p-accounts">
@@ -24,6 +25,28 @@
 <form method="post" action="/link/start" style="display:inline">{{template "csrf" .CSRF}}<button type="submit">link a chatgpt account</button></form>
 {{if .Accounts}} <form method="post" action="/usage/refresh" style="display:inline">{{template "csrf" .CSRF}}<button type="submit" class="link">refresh limits</button></form>
 <p class="muted">limits are cached ~30 min; refresh (or the get_usage tool) fetches fresh.</p>{{end}}
+</section>
+<section class="tabpane" id="p-runway">
+<p class="muted">runway powers the <code>generate_video</code> tool. it has no oauth and no api key for the video tools, so pintr uses the same bearer token your logged-in runway tab holds. it is stored encrypted and only ever sent to runway.</p>
+{{with .Runway}}
+{{if .Connected}}
+<div class="acct"><div class="acct-hd"><b>{{.Username}}</b> <span class="muted">{{.Plan}}{{if .Email}} · {{.Email}}{{end}}</span></div>
+{{if .Expires}}<div class="limits">{{if .Expired}}<span class="err">token expired on {{.Expires}} — paste a fresh one below, generation will fail until you do</span>{{else if .ExpiringSoon}}<span class="err">token expires {{.Expires}} ({{.DaysLeft}} day(s) left) — paste a fresh one soon</span>{{else}}<span class="ok">token valid until {{.Expires}}</span> <span class="muted">· {{.DaysLeft}} day(s) left</span>{{end}}</div>{{end}}
+<div class="acct-ft"><form method="post" action="/runway/disconnect" style="display:inline" data-confirm="disconnect runway? generate_video will stop working until you reconnect.">{{template "csrf" $.CSRF}}<button type="submit" class="link danger">disconnect runway</button></form></div></div>
+{{else}}<p class="err">no runway account connected. <code>generate_video</code> will fail until you add one.</p>{{end}}
+
+<h2>{{if .Connected}}replace the token{{else}}connect runway{{end}}</h2>
+<ol class="steps">
+<li>open <code>app.runwayml.com</code> in a logged-in tab</li>
+<li>open devtools (F12) → <b>Application</b> → <b>Local storage</b> → <code>https://app.runwayml.com</code></li>
+<li>copy the whole value of <code>RW_USER_TOKEN</code> (starts with <code>eyJ</code>)</li>
+<li>paste it below</li>
+</ol>
+<form method="post" action="/runway/connect" class="keyform">{{template "csrf" $.CSRF}}<input type="password" name="token" placeholder="RW_USER_TOKEN" autocomplete="off" spellcheck="false" required><button type="submit">{{if .Connected}}replace token{{else}}connect runway{{end}}</button></form>
+<p class="muted">runway tokens last 30 days and there is no refresh — when it lapses, repeat these steps. pintr checks the token against runway before saving it.</p>
+<p class="muted modellist">generations always run in runway's <b>explore mode</b>: no credits are spent, but they queue, and runway allows one at a time per account. models available to <code>generate_video</code>: {{range $i, $m := .Models}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}.</p>
+<p class="muted modellist">the <code>seedance_2</code> family takes both <b>references</b> (up to 9, addressed as <code>@Image1</code>…) and <b>keyframes</b> (first/last frame). the other models take keyframes only{{if .RefModels}} — references work on {{range $i, $m := .RefModels}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{end}}.</p>
+{{end}}
 </section>
 <section class="tabpane" id="p-keys">
 <p class="muted">access keys authenticate scripts/clients with <code>Authorization: Bearer &lt;key&gt;</code>. mcp clients that logged in through the browser oauth flow show up as "oauth" sessions — revoke any of them here.</p>

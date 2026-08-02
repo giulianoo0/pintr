@@ -71,6 +71,19 @@ CREATE TABLE IF NOT EXISTS codex_accounts (
   UNIQUE(user_id, account_id)
 );
 CREATE INDEX IF NOT EXISTS idx_codex_accounts_user ON codex_accounts(user_id);
+CREATE TABLE IF NOT EXISTS runway_accounts (
+  id               TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  runway_user_id   TEXT NOT NULL,
+  team_id          INTEGER NOT NULL,
+  username         TEXT NOT NULL DEFAULT '',
+  email            TEXT NOT NULL DEFAULT '',
+  plan             TEXT NOT NULL DEFAULT '',
+  token_encrypted  BLOB NOT NULL,
+  token_expires_at TEXT NOT NULL DEFAULT '',
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS oauth_sessions (
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -127,6 +140,12 @@ func (s *Store) SigningKey() []byte { return s.derive("oauth-signing-v1") }
 // blob can't be authenticated after being moved to another user or account.
 func tokenAAD(userID, accountID string) []byte {
 	return []byte("codex-token|" + userID + "|" + accountID)
+}
+
+// runwayTokenAAD binds a stored Runway token to its owner. The label differs
+// from the Codex one so a blob can't be swapped between providers either.
+func runwayTokenAAD(userID string) []byte {
+	return []byte("runway-token|" + userID)
 }
 
 func (s *Store) encrypt(plaintext, aad []byte) ([]byte, error) {

@@ -3,7 +3,8 @@
 pintr is a small mcp server that generates images through the Codex image model
 using your own ChatGPT login, so there is no separate api key to manage. it
 speaks the model context protocol, so any mcp client (like claude code) can call
-its one tool: `generate_image`.
+its main tool: `generate_image`. the hosted server adds `generate_video`, which
+drives Runway with your own Runway login.
 
 it runs two ways:
 
@@ -116,6 +117,56 @@ delivery differs by mode:
 - **stdio**: the png is written to a pintr-chosen cache path, returned as `saved_path`.
 - **hosted**: see below.
 
+## the tool: generate_video (hosted only)
+
+generates video through Runway, using your own Runway login. Runway has no oauth
+and no api key for its video tools, so the credential is the bearer token your
+logged-in browser holds: dashboard → **runway** tab → paste the `RW_USER_TOKEN`
+value from devtools (Application → Local storage → `app.runwayml.com`). it is
+validated against Runway before it is saved, stored encrypted (AES-256-GCM,
+bound to your pintr user), and only ever sent to Runway. Runway tokens last 30
+days with no refresh, so the dashboard shows the expiry and warns before it
+lapses.
+
+| field | required | what it is |
+| --- | --- | --- |
+| `prompt` | yes¹ | the full video prompt |
+| `reference_images` | no | `ref_` handles from `request_reference_upload`, same flow as `generate_image`. address them from the prompt as `@Image1`, `@Image2`, … in the order listed |
+| `reference_image_files` | no | **Hosted ChatGPT only:** attached images, as with `generate_image` |
+| `first_frame_image` / `end_frame_image` | no | `ref_` handles pinning the exact opening and closing image. an end frame requires a first frame |
+| `model` | no | defaults to `seedance_2`; restricted to an allowlist of video models |
+| `duration_seconds` | no | 1–12, defaults to 5 |
+| `aspect_ratio` | no | defaults to `16:9` |
+| `resolution` | no | defaults to `720p` |
+| `audio` | no | defaults to true, on models that support it |
+| `task_id` | no | ¹resume a generation from an earlier call; pass it alone, with no prompt |
+
+**references vs keyframes.** these are different mechanisms and models differ in
+which they accept. references (`reference_images`) anchor a character, place or
+style and are addressed from the prompt as `@Image1`, `@Image2`, …; only the
+`seedance_2` family takes them (up to 9). keyframes (`first_frame_image`,
+`end_frame_image`) pin the exact first and last image; most other models take
+keyframes instead, and `gen4`, `gen4_turbo` and `kling_3_0_turbo` take a first
+frame only. `seedance_2` accepts both at once, which is why it is the default.
+under the hood both ride in Runway's single `referenceImages` array — keyframes
+tagged `first_frame`/`end_frame`, references untagged — and pintr validates the
+combination against the model before submitting.
+
+the per-model capability table in `internal/runway/models.go` was read out of
+Runway's own web-app model registry rather than guessed, but it is a snapshot;
+if Runway changes a model underneath us it may need refreshing.
+
+generations always run in Runway's **explore mode**: they cost no credits, but
+they queue — often several minutes — and Runway runs only **one at a time per
+account**. so the tool is asynchronous by necessity: it polls for up to 10
+minutes, then returns `status: queued` (or `running`) with a `task_id`. that is
+not a failure. calling `generate_video` again with only that `task_id` picks the
+same generation back up; repeat until `status` is `succeeded` or `failed`.
+
+on success the mp4 is pulled from Runway and re-hosted the same way generated
+images are: encrypted under a one-time key, with `decrypted_asset_url` serving
+the plain `video/mp4` and the ciphertext expiring after 24 hours.
+
 ## hosted reference images
 
 Hosted pintr never reads a path from your computer. Use the flow for the client
@@ -201,7 +252,8 @@ the env vars are set:
 
 - `PINTR_PLAUSIBLE_DOMAIN` — enables **server-side** counters through the
   [Plausible Events API](https://plausible.io/docs/events-api): `signup`,
-  `chatgpt_linked`, `generate_image`, `get_usage`, `image_view`,
+  `chatgpt_linked`, `runway_connect`, `generate_image`, `generate_video`,
+  `get_usage`, `image_view`, `video_view`,
   `reference_upload`, and `mcp_client_authorized`. each event is **just a
   name** — no user id, email, IP forwarding, prompt, or image data is ever
   sent, so the numbers are pure aggregate counts.
