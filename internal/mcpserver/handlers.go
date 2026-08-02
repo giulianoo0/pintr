@@ -290,99 +290,79 @@ func HostedGenerate(st *store.Store, assetStore *assets.Store, tracker *analytic
 // generation finishes near the limit there is still time to download it,
 // encrypt it and store it. Without it a video could complete on Runway's side
 // and still be reported as queued.
-const videoPollReserve = 90 * time.Second
+// PollAfterSeconds is the cadence pintr asks agents to re-check a running
+// generation on. Explore-mode work moves on the order of minutes, so a minute
+// between checks is responsive without hammering Runway.
+const PollAfterSeconds = 60
 
-// HostedGenerateVideo submits a Runway generation (or resumes one by task id),
-// waits as long as the call's deadline allows, and on success re-hosts the MP4
-// the same way generated images are: encrypted under a one-time key that is
-// returned once and never stored.
+// runwayClientFor resolves the caller's connected Runway account.
+func runwayClientFor(ctx context.Context, st *store.Store, assetStore *assets.Store) (*runway.Client, string, error) {
+	u, ok := oauth.UserFromContext(ctx)
+	if !ok {
+		return nil, "", errors.New("unauthenticated")
+	}
+	if assetStore == nil {
+		return nil, "", errors.New("video storage is not configured on this server (set PINTR_S3_*)")
+	}
+	token, account, err := st.LoadRunwayToken(ctx, u.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNoRunwayAccount) {
+			return nil, "", errors.New("no runway account connected — open the pintr dashboard, go to the runway tab, and paste your RW_USER_TOKEN")
+		}
+		return nil, "", err
+	}
+	return runway.NewClient(token, account.TeamID), u.ID, nil
+}
+
+// HostedGenerateVideo submits a Runway generation and returns immediately with
+// its task id.
+//
+// It deliberately does NOT wait for the video. Explore mode queues for minutes,
+// far longer than MCP clients keep a tool call open — a blocking call gets cut
+// off by the connector, and because the task id only existed inside that call,
+// the generation is left running with no way to find it again. Submitting and
+// handing back the id makes the wait the agent's job, via video_queue.
 func HostedGenerateVideo(st *store.Store, assetStore *assets.Store, tracker *analytics.Tracker, publicURL string, downloader referenceDownloader) GenerateVideoFunc {
 	return func(ctx context.Context, args generateVideoArgs) (*mcp.CallToolResult, generateVideoResult, error) {
-		u, ok := oauth.UserFromContext(ctx)
-		if !ok {
-			return nil, generateVideoResult{}, errors.New("unauthenticated")
-		}
-		if assetStore == nil {
-			return nil, generateVideoResult{}, errors.New("video storage is not configured on this server (set PINTR_S3_*)")
-		}
-		token, account, err := st.LoadRunwayToken(ctx, u.ID)
+		client, userID, err := runwayClientFor(ctx, st, assetStore)
 		if err != nil {
-			if errors.Is(err, store.ErrNoRunwayAccount) {
-				return nil, generateVideoResult{}, errors.New("no runway account connected — open the pintr dashboard, go to the runway tab, and paste your RW_USER_TOKEN")
-			}
 			return nil, generateVideoResult{}, err
 		}
-		client := runway.NewClient(token, account.TeamID)
-
 		startedAt := time.Now()
-		model := strings.TrimSpace(args.Model)
-		if model == "" {
-			model = runway.DefaultModel
-		}
 
-		task, err := startOrResumeVideo(ctx, client, st, assetStore, u.ID, args, downloader)
-		if err != nil {
-			return nil, generateVideoResult{}, err
-		}
-
-		// Poll under a shortened deadline so the success path still has time to
-		// fetch and store the result.
-		pollCtx, cancel := pollContext(ctx)
-		defer cancel()
-		task, err = client.WaitForTask(pollCtx, task.ID, nil)
-		if err != nil {
-			return nil, generateVideoResult{}, err
-		}
-
-		result := generateVideoResult{
-			TaskID:          task.ID,
-			Model:           model,
-			ProgressPercent: int(math.Round(task.Progress * 100)),
-			DurationMs:      time.Since(startedAt).Milliseconds(),
-		}
-
-		switch {
-		case task.Status == runway.StatusSucceeded:
-			if task.VideoURL == "" {
-				return nil, generateVideoResult{}, errors.New("runway reported success but returned no video")
-			}
-			video, mimeType, err := client.DownloadVideo(ctx, task.VideoURL)
+		// A task_id with no prompt is a status check; keep it working here so an
+		// agent holding an id from an older call isn't stranded.
+		if taskID := strings.TrimSpace(args.TaskID); taskID != "" {
+			task, err := client.GetTask(ctx, taskID)
 			if err != nil {
 				return nil, generateVideoResult{}, err
 			}
-			stored, err := assetStore.PutEncrypted(ctx, u.ID, video)
-			if err != nil {
-				return nil, generateVideoResult{}, fmt.Errorf("storing video: %w", err)
-			}
-			tracker.Event("generate_video")
-			result.Status = "succeeded"
-			result.AssetURL = stored.URL
-			result.DecryptedAssetURL = viewURL(publicURL, stored.ObjectKey, stored.KeyB64)
-			result.DecryptionKey = stored.KeyB64
-			result.MimeType = mimeType
-			result.SizeBytes = len(video)
-			result.ProgressPercent = 100
-			result.Message = fmt.Sprintf("Video generated (%d bytes). Open decrypted_asset_url to watch it — "+
-				"it returns the decrypted MP4 directly, decrypted server-side. asset_url is the raw encrypted "+
-				"ciphertext; decryption_key is its AES-256-GCM key, returned only here and never stored. The "+
-				"stored video auto-deletes in 24 hours — download it now if you need it longer.", len(video))
-		case task.Status == runway.StatusFailed || task.Status == runway.StatusCancelled:
-			result.Status = "failed"
-			result.Message = "Runway reported the generation as " + strings.ToLower(task.Status) + "."
-			if task.Error != "" {
-				result.Message += " " + task.Error
-			}
-		default:
-			result.Status = "running"
-			if task.Queued() {
-				result.Status = "queued"
-			}
-			result.Message = fmt.Sprintf("Still %s on Runway after %s — this is normal for Explore mode, not a "+
-				"failure. Call generate_video again with task_id %q and no prompt to keep waiting. Do NOT start "+
-				"another generation: Explore mode runs one at a time.",
-				result.Status, time.Since(startedAt).Round(time.Second), task.ID)
+			return finishVideoResult(ctx, client, assetStore, tracker, publicURL, userID, task, startedAt)
 		}
 
+		task, err := submitVideo(ctx, client, assetStore, userID, args, downloader)
+		if err != nil {
+			return nil, generateVideoResult{}, err
+		}
+		tracker.Event("generate_video")
+
+		result := generateVideoResult{
+			TaskID:           task.ID,
+			Model:            orDefaultModel(args.Model),
+			Status:           "queued",
+			ProgressPercent:  int(math.Round(task.Progress * 100)),
+			PollAfterSeconds: PollAfterSeconds,
+			DurationMs:       time.Since(startedAt).Milliseconds(),
+			Message: fmt.Sprintf("Generation submitted to Runway as task %s. It is NOT finished — Explore mode "+
+				"queues, and the whole job commonly takes 10-20 minutes. Wait about %d seconds, then call "+
+				"video_queue with task_id %q to check it, and keep re-checking on that cadence until status is "+
+				"succeeded or failed. The video URLs appear in that result, not this one. Runway caps how many "+
+				"generations may be in flight at once, so do not fire off a batch while this one is pending.",
+				task.ID, PollAfterSeconds, task.ID),
+		}
+		if task.Status == runway.StatusRunning {
+			result.Status = "running"
+		}
 		callResult, err := hostedVideoCallResult(result)
 		if err != nil {
 			return nil, generateVideoResult{}, err
@@ -391,12 +371,169 @@ func HostedGenerateVideo(st *store.Store, assetStore *assets.Store, tracker *ana
 	}
 }
 
-// startOrResumeVideo either picks up the task named in task_id or uploads the
-// references and submits a new generation.
-func startOrResumeVideo(ctx context.Context, client *runway.Client, st *store.Store, assetStore *assets.Store, userID string, args generateVideoArgs, downloader referenceDownloader) (runway.Task, error) {
-	if taskID := strings.TrimSpace(args.TaskID); taskID != "" {
-		return client.GetTask(ctx, taskID)
+// HostedVideoQueue is the queue view: every recent generation with its status,
+// or one task in detail. When a task has finished, this is where its video gets
+// pulled from Runway, encrypted and handed back.
+func HostedVideoQueue(st *store.Store, assetStore *assets.Store, tracker *analytics.Tracker, publicURL string) VideoQueueFunc {
+	return func(ctx context.Context, args videoQueueArgs) (*mcp.CallToolResult, videoQueueResult, error) {
+		client, userID, err := runwayClientFor(ctx, st, assetStore)
+		if err != nil {
+			return nil, videoQueueResult{}, err
+		}
+
+		if taskID := strings.TrimSpace(args.TaskID); taskID != "" {
+			task, err := client.GetTask(ctx, taskID)
+			if err != nil {
+				return nil, videoQueueResult{}, err
+			}
+			_, detail, err := finishVideoResult(ctx, client, assetStore, tracker, publicURL, userID, task, time.Now())
+			if err != nil {
+				return nil, videoQueueResult{}, err
+			}
+			result := videoQueueResult{
+				Task:             &detail,
+				PollAfterSeconds: pollHintFor(detail.Status),
+				Message:          detail.Message,
+			}
+			return queueCallResult(result)
+		}
+
+		tasks, err := client.ListTasks(ctx, args.Limit)
+		if err != nil {
+			return nil, videoQueueResult{}, err
+		}
+		result := videoQueueResult{Generations: make([]videoQueueEntry, 0, len(tasks))}
+		pending := 0
+		for _, task := range tasks {
+			status := statusLabel(task)
+			if status == "queued" || status == "running" {
+				pending++
+			}
+			result.Generations = append(result.Generations, videoQueueEntry{
+				TaskID:          task.ID,
+				Status:          status,
+				ProgressPercent: int(math.Round(task.Progress * 100)),
+				Model:           task.Model,
+				Prompt:          task.Prompt,
+				CreatedAt:       task.CreatedAt,
+				Error:           task.Error,
+			})
+		}
+		result.PendingCount = pending
+		switch {
+		case len(result.Generations) == 0:
+			result.Message = "No video generations on this Runway account yet."
+		case pending > 0:
+			result.PollAfterSeconds = PollAfterSeconds
+			result.Message = fmt.Sprintf("%d generation(s) still queued or running. Re-check in about %d seconds. "+
+				"Call video_queue with a task_id to get that one's detail and, once it succeeds, its video URLs. "+
+				"Runway caps how many generations may be in flight at once — submit more only as these finish.",
+				pending, PollAfterSeconds)
+		default:
+			result.Message = "Nothing pending. Call video_queue with a task_id to fetch a finished generation's video URLs."
+		}
+		return queueCallResult(result)
 	}
+}
+
+// pollHintFor tells the agent when to come back, and stays 0 for terminal
+// states so a finished generation doesn't invite pointless re-checks.
+func pollHintFor(status string) int {
+	if status == "queued" || status == "running" {
+		return PollAfterSeconds
+	}
+	return 0
+}
+
+func statusLabel(task runway.Task) string {
+	switch {
+	case task.Status == runway.StatusSucceeded:
+		return "succeeded"
+	case task.Status == runway.StatusFailed || task.Status == runway.StatusCancelled:
+		return "failed"
+	case task.Queued():
+		return "queued"
+	default:
+		return "running"
+	}
+}
+
+func orDefaultModel(model string) string {
+	if strings.TrimSpace(model) == "" {
+		return runway.DefaultModel
+	}
+	return strings.TrimSpace(model)
+}
+
+// finishVideoResult turns one observed task into a result, delivering the MP4
+// when it has succeeded: downloaded from Runway, encrypted under a one-time key
+// that is returned once and never stored, exactly like generated images.
+func finishVideoResult(ctx context.Context, client *runway.Client, assetStore *assets.Store, tracker *analytics.Tracker, publicURL, userID string, task runway.Task, startedAt time.Time) (*mcp.CallToolResult, generateVideoResult, error) {
+	result := generateVideoResult{
+		TaskID:          task.ID,
+		Model:           orDefaultModel(task.Model),
+		Status:          statusLabel(task),
+		ProgressPercent: int(math.Round(task.Progress * 100)),
+		DurationMs:      time.Since(startedAt).Milliseconds(),
+	}
+	result.PollAfterSeconds = pollHintFor(result.Status)
+
+	switch result.Status {
+	case "succeeded":
+		if task.VideoURL == "" {
+			return nil, generateVideoResult{}, errors.New("runway reported success but returned no video")
+		}
+		video, mimeType, err := client.DownloadVideo(ctx, task.VideoURL)
+		if err != nil {
+			return nil, generateVideoResult{}, err
+		}
+		stored, err := assetStore.PutEncrypted(ctx, userID, video)
+		if err != nil {
+			return nil, generateVideoResult{}, fmt.Errorf("storing video: %w", err)
+		}
+		tracker.Event("video_delivered")
+		result.AssetURL = stored.URL
+		result.DecryptedAssetURL = viewURL(publicURL, stored.ObjectKey, stored.KeyB64)
+		result.DecryptionKey = stored.KeyB64
+		result.MimeType = mimeType
+		result.SizeBytes = len(video)
+		result.ProgressPercent = 100
+		result.Message = fmt.Sprintf("Video ready (%d bytes). Open decrypted_asset_url to watch it — it returns "+
+			"the decrypted MP4 directly, decrypted server-side. asset_url is the raw encrypted ciphertext; "+
+			"decryption_key is its AES-256-GCM key, returned only here and never stored. The stored video "+
+			"auto-deletes in 24 hours — download it now if you need it longer.", len(video))
+	case "failed":
+		result.Message = "Runway reported the generation as " + strings.ToLower(task.Status) + "."
+		if task.Error != "" {
+			result.Message += " " + task.Error
+		}
+	default:
+		result.Message = fmt.Sprintf("Still %s on Runway (%d%%). This is normal for Explore mode, not a failure. "+
+			"Re-check with video_queue and task_id %q in about %d seconds.",
+			result.Status, result.ProgressPercent, task.ID, PollAfterSeconds)
+	}
+
+	callResult, err := hostedVideoCallResult(result)
+	if err != nil {
+		return nil, generateVideoResult{}, err
+	}
+	return callResult, result, nil
+}
+
+func queueCallResult(result videoQueueResult) (*mcp.CallToolResult, videoQueueResult, error) {
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return nil, videoQueueResult{}, fmt.Errorf("encoding result: %w", err)
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		&mcp.TextContent{Text: result.Message},
+		&mcp.TextContent{Text: string(resultJSON)},
+	}}, result, nil
+}
+
+// submitVideo uploads any reference images and keyframes, then creates the
+// generation.
+func submitVideo(ctx context.Context, client *runway.Client, assetStore *assets.Store, userID string, args generateVideoArgs, downloader referenceDownloader) (runway.Task, error) {
 	if strings.TrimSpace(args.Prompt) == "" {
 		return runway.Task{}, errors.New("prompt is required to start a generation (or pass task_id to resume one)")
 	}
@@ -456,20 +593,6 @@ func uploadKeyframe(ctx context.Context, client *runway.Client, st referenceFetc
 		return nil, fmt.Errorf("uploading %s to runway: %w", field, err)
 	}
 	return &asset, nil
-}
-
-// pollContext shortens ctx by videoPollReserve, leaving room to download and
-// store a video that finishes right at the deadline.
-func pollContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return context.WithCancel(ctx)
-	}
-	shortened := deadline.Add(-videoPollReserve)
-	if !shortened.After(time.Now()) {
-		return context.WithCancel(ctx)
-	}
-	return context.WithDeadline(ctx, shortened)
 }
 
 func hostedVideoCallResult(result generateVideoResult) (*mcp.CallToolResult, error) {

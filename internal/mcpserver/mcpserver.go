@@ -27,10 +27,12 @@ const Version = "0.2.0"
 const (
 	generationTimeout = 10 * time.Minute
 	progressInterval  = 10 * time.Second
-	// videoTimeout bounds one generate_video call. Runway's Explore-mode queue
-	// can outlast it; the tool then returns a task_id instead of an error so a
-	// follow-up call can resume the same generation.
-	videoTimeout                 = 10 * time.Minute
+	// videoTimeout is a safety bound on the Runway tools, not a wait: they
+	// submit or poll and return in seconds. It only has to cover the slowest
+	// real work, which is delivering a finished video (download from Runway,
+	// encrypt, store). Anything longer would outlive the MCP client's own
+	// timeout, and a call the client abandons loses the task id with it.
+	videoTimeout                 = 3 * time.Minute
 	hostedMaxReferenceImages     = 8
 	hostedMaxReferenceImageBytes = 10 << 20
 	hostedMaxReferenceTotalBytes = 40 << 20
@@ -79,17 +81,43 @@ type generateVideoArgs struct {
 	FirstFrameImage     string               `json:"first_frame_image,omitempty" jsonschema:"ref_ handle for the image the video should START on"`
 	EndFrameImage       string               `json:"end_frame_image,omitempty" jsonschema:"ref_ handle for the image the video should END on; needs first_frame_image too"`
 	Model               string               `json:"model,omitempty" jsonschema:"video model to use; defaults to seedance_2"`
-	DurationSeconds     int                  `json:"duration_seconds,omitempty" jsonschema:"clip length in seconds (1-12); defaults to 5"`
+	DurationSeconds     int                  `json:"duration_seconds,omitempty" jsonschema:"clip length in seconds; Seedance takes 4-15, defaults to 5"`
 	AspectRatio         string               `json:"aspect_ratio,omitempty" jsonschema:"defaults to 16:9"`
-	Resolution          string               `json:"resolution,omitempty" jsonschema:"defaults to 720p"`
+	Resolution          string               `json:"resolution,omitempty" jsonschema:"defaults to 720p; Seedance only supports 720p in Explore mode"`
 	Audio               *bool                `json:"audio,omitempty" jsonschema:"generate a soundtrack on models that support it; defaults to true"`
 	TaskID              string               `json:"task_id,omitempty" jsonschema:"resume a generation started by an earlier call; pass this alone, with no prompt"`
+}
+
+// videoQueueArgs drives the queue view: no task_id lists everything recent,
+// a task_id returns that one in detail (and delivers its video once ready).
+type videoQueueArgs struct {
+	TaskID string `json:"task_id,omitempty" jsonschema:"check one generation in detail; omit to list them all"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"how many recent generations to list (default 20, max 50)"`
+}
+
+type videoQueueEntry struct {
+	TaskID          string `json:"task_id"`
+	Status          string `json:"status"` // queued, running, succeeded, failed
+	ProgressPercent int    `json:"progress_percent"`
+	Model           string `json:"model"`
+	Prompt          string `json:"prompt,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+type videoQueueResult struct {
+	Generations      []videoQueueEntry    `json:"generations,omitempty"`
+	Task             *generateVideoResult `json:"task,omitempty"`
+	PendingCount     int                  `json:"pending_count"`
+	PollAfterSeconds int                  `json:"poll_after_seconds"`
+	Message          string               `json:"message"`
 }
 
 type generateVideoResult struct {
 	Status            string `json:"status"` // queued, running, succeeded, failed
 	TaskID            string `json:"task_id"`
 	ProgressPercent   int    `json:"progress_percent"`
+	PollAfterSeconds  int    `json:"poll_after_seconds,omitempty"`
 	Message           string `json:"message"`
 	AssetURL          string `json:"asset_url,omitempty"`
 	DecryptedAssetURL string `json:"decrypted_asset_url,omitempty"`
@@ -123,6 +151,7 @@ type referenceUploadResult struct {
 
 type GenerateFunc func(context.Context, generateImageArgs) (*mcp.CallToolResult, generateImageResult, error)
 type GenerateVideoFunc func(context.Context, generateVideoArgs) (*mcp.CallToolResult, generateVideoResult, error)
+type VideoQueueFunc func(context.Context, videoQueueArgs) (*mcp.CallToolResult, videoQueueResult, error)
 type UsageFunc func(context.Context, getUsageArgs) (*mcp.CallToolResult, usageResult, error)
 type ReferenceUploadFunc func(context.Context, referenceUploadArgs) (*mcp.CallToolResult, referenceUploadResult, error)
 
@@ -236,15 +265,16 @@ func generateVideoTool() *mcp.Tool {
 	}
 }
 
-const generateVideoDescription = "Generate a video with Runway (default model Seedance 2.0) using the Runway " +
-	"account connected in the pintr dashboard. Generations always run in Runway's Explore mode: they cost no " +
-	"credits but they QUEUE, often for several minutes. " +
-	"This call polls for up to 10 minutes. If the video is not ready by then it returns status \"queued\" or " +
-	"\"running\" with a task_id — that is NOT a failure and NOT a reason to start another generation. Call " +
-	"generate_video again with ONLY that task_id (no prompt) to keep waiting; repeat until status is " +
-	"\"succeeded\" or \"failed\". " +
-	"Explore mode runs ONE generation at a time per Runway account: submitting a second while one is pending " +
-	"fails, so always resume with task_id instead. " +
+const generateVideoDescription = "Start a video generation on Runway (default model Seedance 2.0) using the " +
+	"Runway account connected in the pintr dashboard. " +
+	"This SUBMITS the job and returns immediately with a task_id — it does NOT return the video. Generations " +
+	"always run in Runway's Explore mode: they cost no credits but they queue, and the whole job commonly takes " +
+	"10-20 minutes. " +
+	"After calling this, poll: wait ~60 seconds, call video_queue with the returned task_id, and keep " +
+	"re-checking on that cadence until status is \"succeeded\" or \"failed\". The video URLs come back from " +
+	"video_queue, never from this call. A status of \"queued\" or \"running\" is normal progress, not a failure. " +
+	"Runway caps how many generations an account may have in flight at once, so do NOT fire off a batch — check " +
+	"video_queue first if you are unsure what is already running, and submit more only as earlier ones finish. " +
 	"When it succeeds, ALWAYS look at the video: open decrypted_asset_url, which returns the decrypted MP4 " +
 	"(video/mp4) directly, no decryption needed on your side. (asset_url is the raw encrypted ciphertext and " +
 	"decryption_key is its key, if you would rather fetch and decrypt it yourself.) Stored videos auto-delete " +
@@ -260,6 +290,32 @@ const generateVideoDescription = "Generate a video with Runway (default model Se
 	"In ChatGPT, attached images arrive through reference_image_files instead; do not construct file descriptors " +
 	"by hand."
 
+// videoQueueTool is how an agent follows a generation it cannot wait on
+// inline, and how it recovers one whose submitting call was cut short — the
+// task keeps running on Runway either way, and this lists it.
+func videoQueueTool() *mcp.Tool {
+	schema, err := jsonschema.For[videoQueueArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("video_queue schema: %v", err))
+	}
+	return &mcp.Tool{
+		Name: "video_queue",
+		Description: "Check Runway video generations: the queue, or one generation in detail. " +
+			"Call with no arguments to list recent generations with their status and progress — use this to see " +
+			"what is already in flight before starting anything, and to recover the task_id of a generation whose " +
+			"generate_video call was cut off (the job keeps running on Runway regardless). " +
+			"Call with a task_id for that one generation's detail, and, once it has finished, its video: " +
+			"decrypted_asset_url returns the decrypted MP4 (video/mp4) directly — always open it to look at the " +
+			"result. Videos auto-delete 24 hours after generation. " +
+			"POLLING: while a generation is queued or running, re-check about every 60 seconds (the result's " +
+			"poll_after_seconds says when to come back; it is 0 once there is nothing left to wait for). Queued " +
+			"and running are normal progress, not failures — a generation commonly takes 10-20 minutes end to " +
+			"end. Runway caps how many generations may be in flight at once, so check what is already running here " +
+			"before submitting more.",
+		InputSchema: schema,
+	}
+}
+
 func toAnySlice(values []string) []any {
 	out := make([]any, 0, len(values))
 	for _, value := range values {
@@ -269,7 +325,7 @@ func toAnySlice(values []string) []any {
 }
 
 // New builds the MCP server with the tools available in the selected mode.
-func New(hosted bool, generate GenerateFunc, usage UsageFunc, referenceUpload ReferenceUploadFunc, generateVideo GenerateVideoFunc) *mcp.Server {
+func New(hosted bool, generate GenerateFunc, usage UsageFunc, referenceUpload ReferenceUploadFunc, generateVideo GenerateVideoFunc, videoQueue VideoQueueFunc) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "pintr", Version: Version}, nil)
 	mcp.AddTool(server, generateImageTool(hosted), func(ctx context.Context, req *mcp.CallToolRequest, args generateImageArgs) (*mcp.CallToolResult, generateImageResult, error) {
 		ctx, cancel := context.WithTimeout(ctx, generationTimeout)
@@ -298,10 +354,16 @@ func New(hosted bool, generate GenerateFunc, usage UsageFunc, referenceUpload Re
 		mcp.AddTool(server, generateVideoTool(), func(ctx context.Context, req *mcp.CallToolRequest, args generateVideoArgs) (*mcp.CallToolResult, generateVideoResult, error) {
 			ctx, cancel := context.WithTimeout(ctx, videoTimeout)
 			defer cancel()
-			stopProgress := startVideoProgress(ctx, req)
-			res, out, err := generateVideo(ctx, args)
-			stopProgress()
-			return res, out, err
+			return generateVideo(ctx, args)
+		})
+	}
+	if hosted && videoQueue != nil {
+		mcp.AddTool(server, videoQueueTool(), func(ctx context.Context, req *mcp.CallToolRequest, args videoQueueArgs) (*mcp.CallToolResult, videoQueueResult, error) {
+			// Delivering a finished video downloads and re-encrypts it, so this
+			// gets more room than a plain status read would need.
+			ctx, cancel := context.WithTimeout(ctx, videoTimeout)
+			defer cancel()
+			return videoQueue(ctx, args)
 		})
 	}
 	return server
@@ -314,15 +376,6 @@ func New(hosted bool, generate GenerateFunc, usage UsageFunc, referenceUpload Re
 func startProgress(ctx context.Context, req *mcp.CallToolRequest) func() {
 	return startProgressWith(ctx, req, func(elapsed int) string {
 		return fmt.Sprintf("generating… %ds elapsed (can take up to 420s)", elapsed)
-	})
-}
-
-// startVideoProgress is the same ticker for generate_video, whose wait is
-// dominated by Runway's Explore-mode queue rather than by rendering.
-func startVideoProgress(ctx context.Context, req *mcp.CallToolRequest) func() {
-	return startProgressWith(ctx, req, func(elapsed int) string {
-		return fmt.Sprintf("waiting on runway… %ds elapsed (explore mode queues; this call polls for up to %s)",
-			elapsed, videoTimeout)
 	})
 }
 

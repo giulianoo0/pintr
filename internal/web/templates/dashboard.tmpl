@@ -27,7 +27,7 @@
 <p class="muted">limits are cached ~30 min; refresh (or the get_usage tool) fetches fresh.</p>{{end}}
 </section>
 <section class="tabpane" id="p-runway">
-<p class="muted">runway powers the <code>generate_video</code> tool. it has no oauth and no api key for the video tools, so pintr uses the same bearer token your logged-in runway tab holds. it is stored encrypted and only ever sent to runway.</p>
+<p class="muted">runway powers the <code>generate_video</code> and <code>video_queue</code> tools. it has no oauth and no api key for the video tools, so pintr uses the same bearer token your logged-in runway tab holds. it is stored encrypted and only ever sent to runway.</p>
 {{with .Runway}}
 {{if .Connected}}
 <div class="acct"><div class="acct-hd"><b>{{.Username}}</b> <span class="muted">{{.Plan}}{{if .Email}} · {{.Email}}{{end}}</span></div>
@@ -44,7 +44,7 @@
 </ol>
 <form method="post" action="/runway/connect" class="keyform">{{template "csrf" $.CSRF}}<input type="password" name="token" placeholder="RW_USER_TOKEN" autocomplete="off" spellcheck="false" required><button type="submit">{{if .Connected}}replace token{{else}}connect runway{{end}}</button></form>
 <p class="muted">runway tokens last 30 days and there is no refresh — when it lapses, repeat these steps. pintr checks the token against runway before saving it.</p>
-<p class="muted modellist">generations always run in runway's <b>explore mode</b>: no credits are spent, but they queue, and runway allows one at a time per account. models available to <code>generate_video</code>: {{range $i, $m := .Models}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}.</p>
+<p class="muted modellist">generations always run in runway's <b>explore mode</b>: no credits are spent, but they queue, and runway caps how many can be in flight at once. models available to <code>generate_video</code>: {{range $i, $m := .Models}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}.</p>
 <p class="muted modellist">the <code>seedance_2</code> family takes both <b>references</b> (up to 9, addressed as <code>@Image1</code>…) and <b>keyframes</b> (first/last frame). the other models take keyframes only{{if .RefModels}} — references work on {{range $i, $m := .RefModels}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{end}}.</p>
 {{end}}
 </section>

@@ -43,15 +43,38 @@ type Model struct {
 	// omits the field and lets Runway apply the model's own default, rather
 	// than risk rejecting the task with an option name it invented.
 	AudioParam bool
+
+	// Resolutions is what the model accepts *in Explore mode*, which is the
+	// only mode pintr generates in. Explore is more restrictive than paying
+	// with credits — Seedance is 720p-only there — so this is not the same as
+	// the resolutions the model can produce generally. Empty means unverified:
+	// the generic allowlist applies and Runway is the final word.
+	Resolutions []string
+
+	// MinDuration / MaxDuration bound the clip length. Zero means unverified,
+	// in which case the generic bounds apply.
+	MinDuration int
+	MaxDuration int
 }
+
+// seedanceExplore is the verified Explore-mode envelope for the Seedance
+// family: 720p only, and a 4-15s clip.
+var (
+	seedanceResolutions = []string{"720p"}
+	seedanceMinDuration = 4
+	seedanceMaxDuration = 15
+)
 
 var models = []Model{
 	{Name: "seedance_2", Summary: "Seedance 2.0 — multi-reference + keyframes, native audio",
-		MaxRefs: 9, FirstFrame: true, EndFrame: true, AudioParam: true},
+		MaxRefs: 9, FirstFrame: true, EndFrame: true, AudioParam: true,
+		Resolutions: seedanceResolutions, MinDuration: seedanceMinDuration, MaxDuration: seedanceMaxDuration},
 	{Name: "seedance_2_fast", Summary: "Seedance 2.0 Fast — quicker, lower fidelity",
-		MaxRefs: 9, FirstFrame: true, EndFrame: true, AudioParam: true},
+		MaxRefs: 9, FirstFrame: true, EndFrame: true, AudioParam: true,
+		Resolutions: seedanceResolutions, MinDuration: seedanceMinDuration, MaxDuration: seedanceMaxDuration},
 	{Name: "seedance_2_mini", Summary: "Seedance 2.0 Mini — cheapest Seedance tier",
-		MaxRefs: 9, FirstFrame: true, EndFrame: true, AudioParam: true},
+		MaxRefs: 9, FirstFrame: true, EndFrame: true, AudioParam: true,
+		Resolutions: seedanceResolutions, MinDuration: seedanceMinDuration, MaxDuration: seedanceMaxDuration},
 
 	{Name: "gen4", Summary: "Runway Gen-4 — image to video, first frame only", FirstFrame: true},
 	{Name: "gen4_turbo", Summary: "Runway Gen-4 Turbo — faster Gen-4, first frame only", FirstFrame: true},
@@ -120,23 +143,41 @@ func ReferenceModelNames() []string {
 // because they land in the task payload verbatim.
 var (
 	aspectRatios = []string{"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"}
-	resolutions  = []string{"480p", "720p", "1080p"}
+	resolutions  = []string{"480p", "720p", "1080p", "4K"}
 )
 
 const (
 	DefaultAspectRatio = "16:9"
 	DefaultResolution  = "720p"
 	DefaultDuration    = 5
-	// maxDuration is Runway's own ceiling for a single clip on these models.
-	maxDuration = 12
+	// Generic bounds, used for models whose own limits are unverified.
+	minDuration = 1
+	maxDuration = 15
 )
 
 func validateAspectRatio(value string) (string, error) {
 	return oneOf(value, DefaultAspectRatio, aspectRatios, "aspect_ratio")
 }
 
-func validateResolution(value string) (string, error) {
-	return oneOf(value, DefaultResolution, resolutions, "resolution")
+// validateResolution checks against the model's Explore-mode resolutions when
+// they are known. Explore is stricter than paying with credits, so a value the
+// model can produce in general may still be rejected here.
+func validateResolution(model Model, value string) (string, error) {
+	allowed := model.Resolutions
+	if len(allowed) == 0 {
+		return oneOf(value, DefaultResolution, resolutions, "resolution")
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return allowed[0], nil
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("model %s only supports %s in Runway's Explore mode, which is the only mode pintr "+
+		"generates in — %q is not available", model.Name, strings.Join(allowed, ", "), value)
 }
 
 func oneOf(value, fallback string, allowed []string, field string) (string, error) {
@@ -152,12 +193,22 @@ func oneOf(value, fallback string, allowed []string, field string) (string, erro
 	return "", fmt.Errorf("unsupported %s %q — use one of: %s", field, value, strings.Join(allowed, ", "))
 }
 
-func validateDuration(seconds int) (int, error) {
+func validateDuration(model Model, seconds int) (int, error) {
+	low, high := minDuration, maxDuration
+	if model.MinDuration > 0 {
+		low = model.MinDuration
+	}
+	if model.MaxDuration > 0 {
+		high = model.MaxDuration
+	}
 	if seconds == 0 {
+		if DefaultDuration < low {
+			return low, nil
+		}
 		return DefaultDuration, nil
 	}
-	if seconds < 1 || seconds > maxDuration {
-		return 0, fmt.Errorf("duration_seconds must be between 1 and %d", maxDuration)
+	if seconds < low || seconds > high {
+		return 0, fmt.Errorf("model %s takes clips of %d-%d seconds", model.Name, low, high)
 	}
 	return seconds, nil
 }

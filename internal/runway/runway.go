@@ -38,10 +38,12 @@ const (
 // revoked by signing out of Runway. The fix is always to paste a fresh one.
 var ErrUnauthorized = errors.New("runway rejected the token — it expired or was revoked; paste a fresh RW_USER_TOKEN in the pintr dashboard")
 
-// ErrBusy is Runway's Explore-mode concurrency limit: one running or pending
-// task per account. Callers should surface it as "wait and retry", not as a
-// failure of the request itself.
-var ErrBusy = errors.New("runway is already running a generation for this account — Explore mode allows one at a time; wait for it to finish and try again")
+// ErrBusy is Runway's Explore-mode concurrency limit. How many generations may
+// be in flight at once is Runway's business and has been observed to vary, so
+// pintr does not hard-code a number — this error IS the limit, reported by
+// Runway itself. Callers should surface it as "wait and retry", not as a
+// failure of the request.
+var ErrBusy = errors.New("runway is already running as many generations as this account may have in flight — wait for one to finish and try again")
 
 // Client is a Runway API client bound to one user's token and team.
 type Client struct {

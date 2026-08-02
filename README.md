@@ -135,9 +135,9 @@ lapses.
 | `reference_image_files` | no | **Hosted ChatGPT only:** attached images, as with `generate_image` |
 | `first_frame_image` / `end_frame_image` | no | `ref_` handles pinning the exact opening and closing image. an end frame requires a first frame |
 | `model` | no | defaults to `seedance_2`; restricted to an allowlist of video models |
-| `duration_seconds` | no | 1–12, defaults to 5 |
+| `duration_seconds` | no | Seedance takes 4–15, defaults to 5 |
 | `aspect_ratio` | no | defaults to `16:9` |
-| `resolution` | no | defaults to `720p` |
+| `resolution` | no | defaults to `720p`. **Seedance only supports 720p in explore mode**, and explore mode is the only mode pintr uses |
 | `audio` | no | defaults to true, on models that support it |
 | `task_id` | no | ¹resume a generation from an earlier call; pass it alone, with no prompt |
 
@@ -156,16 +156,31 @@ the per-model capability table in `internal/runway/models.go` was read out of
 Runway's own web-app model registry rather than guessed, but it is a snapshot;
 if Runway changes a model underneath us it may need refreshing.
 
-generations always run in Runway's **explore mode**: they cost no credits, but
-they queue — often several minutes — and Runway runs only **one at a time per
-account**. so the tool is asynchronous by necessity: it polls for up to 10
-minutes, then returns `status: queued` (or `running`) with a `task_id`. that is
-not a failure. calling `generate_video` again with only that `task_id` picks the
-same generation back up; repeat until `status` is `succeeded` or `failed`.
+`generate_video` **submits and returns immediately** with a `task_id` — it never
+returns the video. generations always run in Runway's **explore mode**: no
+credits are spent, but they queue, and the whole job commonly takes 10-20
+minutes. an MCP client will not hold a tool call open that long: it cuts the
+call off, and since the `task_id` only existed inside that call, the generation
+is left running with no way to find it again. so submitting and polling are
+separate tools.
 
-on success the mp4 is pulled from Runway and re-hosted the same way generated
-images are: encrypted under a one-time key, with `decrypted_asset_url` serving
-the plain `video/mp4` and the ciphertext expiring after 24 hours.
+## the tool: video_queue (hosted only)
+
+the polling companion. no arguments lists recent generations with status and
+progress — use it to see what is in flight, and to recover the `task_id` of a
+generation whose `generate_video` call was cut off (the job keeps running on
+Runway either way). pass a `task_id` for one generation's detail and, once it
+has finished, its video.
+
+**poll about every 60 seconds** while anything is queued or running. the result
+carries `poll_after_seconds`, which is `0` once there is nothing left to wait
+for. Runway caps how many generations can be in flight at once, so submit
+further ones as earlier ones finish.
+
+when a generation finishes, `video_queue` pulls the mp4 from Runway and re-hosts
+it the same way generated images are: encrypted under a one-time key, with
+`decrypted_asset_url` serving the plain `video/mp4` and the ciphertext expiring
+after 24 hours.
 
 ## hosted reference images
 
@@ -253,7 +268,7 @@ the env vars are set:
 - `PINTR_PLAUSIBLE_DOMAIN` — enables **server-side** counters through the
   [Plausible Events API](https://plausible.io/docs/events-api): `signup`,
   `chatgpt_linked`, `runway_connect`, `generate_image`, `generate_video`,
-  `get_usage`, `image_view`, `video_view`,
+  `get_usage`, `video_delivered`, `image_view`, `video_view`,
   `reference_upload`, and `mcp_client_authorized`. each event is **just a
   name** — no user id, email, IP forwarding, prompt, or image data is ever
   sent, so the numbers are pure aggregate counts.

@@ -40,7 +40,7 @@ func ServeStdio(ctx context.Context, authFile string) error {
 	}
 	// generate_video is hosted-only: it needs the per-user Runway token the
 	// dashboard stores, which stdio mode has no place for.
-	server := mcpserver.New(false, mcpserver.StdioGenerate(authStore), mcpserver.StdioUsage(authStore), nil, nil)
+	server := mcpserver.New(false, mcpserver.StdioGenerate(authStore), mcpserver.StdioUsage(authStore), nil, nil, nil)
 	return server.Run(ctx, &mcp.StdioTransport{})
 }
 
@@ -94,6 +94,7 @@ func ServeHTTP(addr string) {
 
 	hostedGenerate := mcpserver.HostedGenerate(st, assetStore, tracker, publicURL, remoteimage.New())
 	hostedGenerateVideo := mcpserver.HostedGenerateVideo(st, assetStore, tracker, publicURL, remoteimage.New())
+	hostedVideoQueue := mcpserver.HostedVideoQueue(st, assetStore, tracker, publicURL)
 	hostedUsage := mcpserver.HostedUsage(st, tracker)
 	var (
 		uploadHandler         http.Handler
@@ -114,7 +115,7 @@ func ServeHTTP(addr string) {
 			if _, ok := oauth.UserFromContext(r.Context()); !ok {
 				return nil
 			}
-			return mcpserver.New(true, hostedGenerate, hostedUsage, hostedReferenceUpload, hostedGenerateVideo)
+			return mcpserver.New(true, hostedGenerate, hostedUsage, hostedReferenceUpload, hostedGenerateVideo, hostedVideoQueue)
 		},
 		// DisableLocalhostProtection: requests arrive from nginx on 127.0.0.1
 		// with Host pintr.giuli.dev, which the SDK's DNS-rebinding guard would

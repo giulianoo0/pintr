@@ -2,6 +2,7 @@ package runway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,12 +46,15 @@ type VideoRequest struct {
 
 // Task is the part of a Runway task pintr cares about.
 type Task struct {
-	ID       string
-	Status   string
-	Progress float64
-	Error    string
-	VideoURL string
-	Filename string
+	ID        string
+	Status    string
+	Progress  float64
+	Error     string
+	VideoURL  string
+	Filename  string
+	Model     string
+	Prompt    string
+	CreatedAt string
 }
 
 // Done reports whether the task reached a terminal state.
@@ -82,7 +86,7 @@ func (c *Client) CreateVideo(ctx context.Context, req VideoRequest) (Task, error
 	if c.teamID == 0 {
 		return Task{}, errors.New("no runway team resolved for this account")
 	}
-	duration, err := validateDuration(req.DurationSeconds)
+	duration, err := validateDuration(model, req.DurationSeconds)
 	if err != nil {
 		return Task{}, err
 	}
@@ -90,7 +94,7 @@ func (c *Client) CreateVideo(ctx context.Context, req VideoRequest) (Task, error
 	if err != nil {
 		return Task{}, err
 	}
-	resolution, err := validateResolution(req.Resolution)
+	resolution, err := validateResolution(model, req.Resolution)
 	if err != nil {
 		return Task{}, err
 	}
@@ -263,20 +267,108 @@ func (c *Client) DownloadVideo(ctx context.Context, videoURL string) ([]byte, st
 	return body, contentType, nil
 }
 
-// rawTask mirrors Runway's task JSON. progressRatio arrives as a string.
+// ListTasks returns the account's most recent tasks, newest first, keeping
+// only the video ones pintr knows about. It is what backs the queue view: a
+// generation whose tool call died still shows up here, which is the only way
+// to recover its id.
+func (c *Client) ListTasks(ctx context.Context, limit int) ([]Task, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	var listed struct {
+		Tasks []rawTask `json:"tasks"`
+	}
+	path := "/v1/tasks?asTeamId=" + strconv.FormatInt(c.teamID, 10) + "&limit=" + strconv.Itoa(limit)
+	if err := c.do(ctx, http.MethodGet, path, nil, &listed); err != nil {
+		return nil, err
+	}
+	tasks := make([]Task, 0, len(listed.Tasks))
+	for _, raw := range listed.Tasks {
+		if _, known := modelsByName[raw.TaskType]; !known {
+			continue // image generations, upscales, workflow runs — not ours
+		}
+		tasks = append(tasks, raw.toTask())
+	}
+	return tasks, nil
+}
+
+// rawTask mirrors Runway's task JSON. progressRatio arrives as a string, and
+// error is polymorphic (see taskError) — decoding it as a plain string made
+// every FAILED task fail to parse, which took the whole list down with it.
 type rawTask struct {
-	ID            string `json:"id"`
-	Status        string `json:"status"`
-	ProgressRatio string `json:"progressRatio"`
-	Error         string `json:"error"`
-	Artifacts     []struct {
+	ID            string    `json:"id"`
+	Status        string    `json:"status"`
+	TaskType      string    `json:"taskType"`
+	CreatedAt     string    `json:"createdAt"`
+	ProgressRatio string    `json:"progressRatio"`
+	Error         taskError `json:"error"`
+	Options       struct {
+		TextPrompt string `json:"textPrompt"`
+	} `json:"options"`
+	Artifacts []struct {
 		URL      string `json:"url"`
 		Filename string `json:"filename"`
 	} `json:"artifacts"`
 }
 
+// taskError decodes Runway's task error, which is null on a healthy task, an
+// object like {"errorMessage":"…","reason":"SAFETY.OUTPUT.THIRD_PARTY"} on a
+// moderated or failed one, and has also been seen as a bare string. Decoding
+// is deliberately total: an unrecognized shape yields no message rather than an
+// error, because a task's status matters more than the prose explaining it.
+type taskError struct {
+	Message string
+	Reason  string
+}
+
+func (e *taskError) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		e.Message = text
+		return nil
+	}
+	var object struct {
+		ErrorMessage string `json:"errorMessage"`
+		Message      string `json:"message"`
+		Reason       string `json:"reason"`
+	}
+	if err := json.Unmarshal(data, &object); err == nil {
+		e.Message = object.ErrorMessage
+		if e.Message == "" {
+			e.Message = object.Message
+		}
+		e.Reason = object.Reason
+	}
+	return nil
+}
+
+// String renders the error for an agent, keeping the reason code — it is what
+// distinguishes "your prompt was moderated" from a transient failure.
+func (e taskError) String() string {
+	switch {
+	case e.Message == "" && e.Reason == "":
+		return ""
+	case e.Message == "":
+		return e.Reason
+	case e.Reason == "":
+		return e.Message
+	default:
+		return e.Message + " (" + e.Reason + ")"
+	}
+}
+
 func (r rawTask) toTask() Task {
-	task := Task{ID: r.ID, Status: strings.ToUpper(strings.TrimSpace(r.Status)), Error: truncate(r.Error, 300)}
+	task := Task{
+		ID:        r.ID,
+		Status:    strings.ToUpper(strings.TrimSpace(r.Status)),
+		Error:     truncate(r.Error.String(), 300),
+		Model:     r.TaskType,
+		Prompt:    truncate(strings.Join(strings.Fields(r.Options.TextPrompt), " "), 160),
+		CreatedAt: r.CreatedAt,
+	}
 	if ratio, err := strconv.ParseFloat(r.ProgressRatio, 64); err == nil {
 		task.Progress = ratio
 	}

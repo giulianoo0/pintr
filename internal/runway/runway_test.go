@@ -61,8 +61,8 @@ func TestUnauthorizedIsActionable(t *testing.T) {
 	}
 }
 
-// Explore mode allows one generation at a time; that 429 has to stay
-// distinguishable so callers can say "wait" instead of "it failed".
+// Runway caps in-flight generations; that 429 has to stay distinguishable from
+// other errors so callers can say "wait" instead of "it failed".
 func TestConcurrencyLimitMapsToErrBusy(t *testing.T) {
 	withAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -94,7 +94,7 @@ func TestCreateVideoPayload(t *testing.T) {
 		Prompt:          "a cat",
 		DurationSeconds: 8,
 		AspectRatio:     "9:16",
-		Resolution:      "1080p",
+		Resolution:      "720p",
 		GenerateAudio:   true,
 		References:      []Asset{{ID: "asset-1", URL: "https://cdn/x.png"}},
 	})
@@ -118,7 +118,7 @@ func TestCreateVideoPayload(t *testing.T) {
 		t.Errorf("textPrompt = %v", payload.Options["textPrompt"])
 	}
 	if payload.Options["duration"] != float64(8) || payload.Options["aspectRatio"] != "9:16" ||
-		payload.Options["resolution"] != "1080p" || payload.Options["generateAudio"] != true {
+		payload.Options["resolution"] != "720p" || payload.Options["generateAudio"] != true {
 		t.Errorf("options = %+v", payload.Options)
 	}
 	refs, _ := payload.Options["referenceImages"].([]any)
@@ -158,12 +158,13 @@ func TestCreateVideoRejectsBadInput(t *testing.T) {
 	})
 	client := NewClient("tok", 1)
 	for name, req := range map[string]VideoRequest{
-		"empty prompt":      {Prompt: "  "},
-		"unknown model":     {Prompt: "x", Model: "workflow_text_to_speech"},
-		"bad aspect ratio":  {Prompt: "x", AspectRatio: "7:3"},
-		"bad resolution":    {Prompt: "x", Resolution: "4k"},
-		"duration too long": {Prompt: "x", DurationSeconds: 60},
-		"too many refs":     {Prompt: "x", Model: "gen4", References: []Asset{{ID: "a"}, {ID: "b"}}},
+		"empty prompt":       {Prompt: "  "},
+		"unknown model":      {Prompt: "x", Model: "workflow_text_to_speech"},
+		"bad aspect ratio":   {Prompt: "x", AspectRatio: "7:3"},
+		"bad resolution":     {Prompt: "x", Resolution: "4k"},
+		"duration too long":  {Prompt: "x", DurationSeconds: 60},
+		"duration too short": {Prompt: "x", DurationSeconds: 2},
+		"too many refs":      {Prompt: "x", Model: "gen4", References: []Asset{{ID: "a"}, {ID: "b"}}},
 	} {
 		if _, err := client.CreateVideo(context.Background(), req); err == nil {
 			t.Errorf("%s: expected an error", name)
@@ -377,6 +378,148 @@ func TestWaitForTaskReturnsLastStateOnDeadline(t *testing.T) {
 	}
 	if task.Status != StatusThrottled {
 		t.Errorf("task = %+v", task)
+	}
+}
+
+// The queue lists the account's tasks, which include image generations and
+// workflow runs pintr has nothing to say about. Only known video models belong.
+func TestListTasksKeepsOnlyVideoTasks(t *testing.T) {
+	withAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/v1/tasks") {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("asTeamId") != "77" {
+			t.Errorf("asTeamId = %q", r.URL.Query().Get("asTeamId"))
+		}
+		_, _ = w.Write([]byte(`{"tasks":[
+			{"id":"a","taskType":"seedance_2","status":"RUNNING","progressRatio":"0.4",
+			 "createdAt":"2026-08-02T00:00:00Z","options":{"textPrompt":"a   cat  running"}},
+			{"id":"b","taskType":"text_to_image","status":"SUCCEEDED"},
+			{"id":"c","taskType":"dynamic_workflow","status":"SUCCEEDED"},
+			{"id":"d","taskType":"gen4","status":"THROTTLED"}
+		]}`))
+	})
+
+	tasks, err := NewClient("tok", 77).ListTasks(context.Background(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want the 2 video ones: %+v", len(tasks), tasks)
+	}
+	if tasks[0].ID != "a" || tasks[0].Model != "seedance_2" || tasks[0].Progress != 0.4 {
+		t.Errorf("task[0] = %+v", tasks[0])
+	}
+	// Whitespace is collapsed so a multi-line prompt stays readable in a list.
+	if tasks[0].Prompt != "a cat running" {
+		t.Errorf("prompt = %q", tasks[0].Prompt)
+	}
+	if tasks[1].ID != "d" || !tasks[1].Queued() {
+		t.Errorf("task[1] = %+v", tasks[1])
+	}
+}
+
+func TestListTasksClampsLimit(t *testing.T) {
+	var seen string
+	withAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.Query().Get("limit")
+		_, _ = w.Write([]byte(`{"tasks":[]}`))
+	})
+	client := NewClient("tok", 1)
+	for _, limit := range []int{0, -5, 999} {
+		if _, err := client.ListTasks(context.Background(), limit); err != nil {
+			t.Fatal(err)
+		}
+		if seen != "20" {
+			t.Errorf("limit %d sent as %q, want the clamped default", limit, seen)
+		}
+	}
+	if _, err := client.ListTasks(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if seen != "5" {
+		t.Errorf("explicit limit sent as %q", seen)
+	}
+}
+
+// Runway reports a failed task's error as an OBJECT, not a string. Decoding it
+// as a string made json.Unmarshal fail, which failed the whole call — one
+// moderated generation would have taken down the entire queue listing.
+func TestFailedTaskErrorObjectParses(t *testing.T) {
+	withAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tasks":[
+			{"id":"a","taskType":"seedance_2","status":"FAILED","progressRatio":"1",
+			 "error":{"errorMessage":"Your request was blocked by this model provider's content moderation system.",
+			          "reason":"SAFETY.OUTPUT.THIRD_PARTY"}},
+			{"id":"b","taskType":"seedance_2","status":"RUNNING","progressRatio":"0.5","error":null}
+		]}`))
+	})
+	tasks, err := NewClient("tok", 1).ListTasks(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("a failed task must not break the listing: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2", len(tasks))
+	}
+	if !strings.Contains(tasks[0].Error, "content moderation") {
+		t.Errorf("error message lost: %q", tasks[0].Error)
+	}
+	// The reason code is what separates moderation from a transient failure.
+	if !strings.Contains(tasks[0].Error, "SAFETY.OUTPUT.THIRD_PARTY") {
+		t.Errorf("error reason lost: %q", tasks[0].Error)
+	}
+	if tasks[1].Error != "" {
+		t.Errorf("a null error should stay empty, got %q", tasks[1].Error)
+	}
+}
+
+// Same field has also been seen as a bare string, and an unknown shape must not
+// take the task down with it.
+func TestTaskErrorTolerAtesOtherShapes(t *testing.T) {
+	for body, want := range map[string]string{
+		`"plain string failure"`:   "plain string failure",
+		`{"message":"alt key"}`:    "alt key",
+		`{"reason":"ONLY_REASON"}`: "ONLY_REASON",
+		`12345`:                    "",
+		`null`:                     "",
+	} {
+		var e taskError
+		if err := e.UnmarshalJSON([]byte(body)); err != nil {
+			t.Errorf("%s: unexpected error %v", body, err)
+		}
+		if got := e.String(); got != want {
+			t.Errorf("%s -> %q, want %q", body, got, want)
+		}
+	}
+}
+
+// Explore mode is stricter than paying with credits: Seedance is 720p-only
+// there, and pintr only ever generates in Explore mode.
+func TestSeedanceExploreModeLimits(t *testing.T) {
+	withAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"task":{"id":"abc","status":"THROTTLED"}}`))
+	})
+	client := NewClient("tok", 1)
+
+	for _, res := range []string{"1080p", "480p", "4K"} {
+		if _, err := client.CreateVideo(context.Background(), VideoRequest{Prompt: "x", Resolution: res}); err == nil {
+			t.Errorf("resolution %s should be rejected for seedance in explore mode", res)
+		}
+	}
+	if _, err := client.CreateVideo(context.Background(), VideoRequest{Prompt: "x", Resolution: "720p"}); err != nil {
+		t.Errorf("720p must be accepted: %v", err)
+	}
+
+	// The duration slider runs 4-15s; 12 was an earlier guess that was too low.
+	for _, seconds := range []int{4, 12, 15} {
+		if _, err := client.CreateVideo(context.Background(), VideoRequest{Prompt: "x", DurationSeconds: seconds}); err != nil {
+			t.Errorf("duration %ds must be accepted: %v", seconds, err)
+		}
+	}
+	for _, seconds := range []int{3, 16} {
+		if _, err := client.CreateVideo(context.Background(), VideoRequest{Prompt: "x", DurationSeconds: seconds}); err == nil {
+			t.Errorf("duration %ds should be rejected", seconds)
+		}
 	}
 }
 

@@ -58,9 +58,9 @@ func TestGenerateVideoRegistrationIsHostedOnly(t *testing.T) {
 		server *mcp.Server
 		want   bool
 	}{
-		{name: "hosted", server: New(true, noopGenerate, noopUsage, nil, noopVideo), want: true},
-		{name: "stdio", server: New(false, noopGenerate, noopUsage, nil, noopVideo), want: false},
-		{name: "hosted without runway", server: New(true, noopGenerate, noopUsage, nil, nil), want: false},
+		{name: "hosted", server: New(true, noopGenerate, noopUsage, nil, noopVideo, nil), want: true},
+		{name: "stdio", server: New(false, noopGenerate, noopUsage, nil, noopVideo, nil), want: false},
+		{name: "hosted without runway", server: New(true, noopGenerate, noopUsage, nil, nil, nil), want: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := slices.Contains(listToolNames(t, tt.server), "generate_video")
@@ -121,7 +121,7 @@ func TestGenerateVideoSchema(t *testing.T) {
 func TestGenerateVideoDescriptionExplainsResuming(t *testing.T) {
 	description := generateVideoTool().Description
 	for _, phrase := range []string{
-		"Explore mode", "task_id", "queued", "ONE generation at a time",
+		"Explore mode", "task_id", "queued", "in flight",
 		"decrypted_asset_url", "@Image1", "request_reference_upload", "24 hours",
 	} {
 		if !strings.Contains(description, phrase) {
@@ -135,5 +135,115 @@ func TestGenerateVideoRejectsUnauthenticated(t *testing.T) {
 		context.Background(), generateVideoArgs{Prompt: "a cat"})
 	if err == nil || err.Error() != "unauthenticated" {
 		t.Fatalf("error = %v, want unauthenticated", err)
+	}
+}
+
+func TestVideoQueueRejectsUnauthenticated(t *testing.T) {
+	_, _, err := HostedVideoQueue(nil, nil, nil, "https://pintr.example")(
+		context.Background(), videoQueueArgs{})
+	if err == nil || err.Error() != "unauthenticated" {
+		t.Fatalf("error = %v, want unauthenticated", err)
+	}
+}
+
+func TestVideoQueueRegistrationIsHostedOnly(t *testing.T) {
+	noopQueue := func(context.Context, videoQueueArgs) (*mcp.CallToolResult, videoQueueResult, error) {
+		return nil, videoQueueResult{}, nil
+	}
+	for _, tt := range []struct {
+		name   string
+		server *mcp.Server
+		want   bool
+	}{
+		{name: "hosted", server: New(true, noopGenerate, noopUsage, nil, noopVideo, noopQueue), want: true},
+		{name: "stdio", server: New(false, noopGenerate, noopUsage, nil, noopVideo, noopQueue), want: false},
+		{name: "hosted without runway", server: New(true, noopGenerate, noopUsage, nil, nil, nil), want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := slices.Contains(listToolNames(t, tt.server), "video_queue"); got != tt.want {
+				t.Fatalf("video_queue registered = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+// The whole point of the queue is recovering from a tool call that died, so
+// task_id must stay optional — a required field would make the bare "what is
+// in flight?" call invalid.
+func TestVideoQueueSchema(t *testing.T) {
+	schema, ok := videoQueueTool().InputSchema.(*jsonschema.Schema)
+	if !ok {
+		t.Fatalf("InputSchema is %T", videoQueueTool().InputSchema)
+	}
+	if len(schema.Required) != 0 {
+		t.Errorf("video_queue takes no required arguments, got %v", schema.Required)
+	}
+	for _, field := range []string{"task_id", "limit"} {
+		if _, ok := schema.Properties[field]; !ok {
+			t.Errorf("schema is missing %q", field)
+		}
+	}
+}
+
+// generate_video must not promise to wait: the connector cuts long calls off,
+// and a cut-off call loses the task id with it.
+func TestGenerateVideoDescriptionSaysItDoesNotWait(t *testing.T) {
+	description := generateVideoTool().Description
+	for _, phrase := range []string{
+		"returns immediately", "does NOT return the video", "video_queue", "60 seconds",
+		"in flight",
+	} {
+		if !strings.Contains(description, phrase) {
+			t.Errorf("description must mention %q", phrase)
+		}
+	}
+	// The old contract told agents to keep re-calling generate_video to wait.
+	if strings.Contains(description, "polls for up to") {
+		t.Error("description still claims the call polls; it submits and returns")
+	}
+}
+
+func TestVideoQueueDescriptionExplainsPolling(t *testing.T) {
+	description := videoQueueTool().Description
+	for _, phrase := range []string{
+		"60 seconds", "poll_after_seconds", "task_id", "cut off",
+		"decrypted_asset_url", "in flight",
+	} {
+		if !strings.Contains(description, phrase) {
+			t.Errorf("description must mention %q", phrase)
+		}
+	}
+}
+
+// poll_after_seconds is the agent's cadence signal: set while there is
+// something to wait for, and cleared once there is not.
+func TestPollHint(t *testing.T) {
+	for status, want := range map[string]int{
+		"queued":    PollAfterSeconds,
+		"running":   PollAfterSeconds,
+		"succeeded": 0,
+		"failed":    0,
+	} {
+		if got := pollHintFor(status); got != want {
+			t.Errorf("pollHintFor(%q) = %d, want %d", status, got, want)
+		}
+	}
+}
+
+func TestStatusLabel(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   string
+	}{
+		{runway.StatusThrottled, "queued"},
+		{runway.StatusPending, "queued"},
+		{runway.StatusRunning, "running"},
+		{runway.StatusSucceeded, "succeeded"},
+		{runway.StatusFailed, "failed"},
+		{runway.StatusCancelled, "failed"},
+	} {
+		if got := statusLabel(runway.Task{Status: tc.status}); got != tc.want {
+			t.Errorf("statusLabel(%s) = %q, want %q", tc.status, got, tc.want)
+		}
 	}
 }
