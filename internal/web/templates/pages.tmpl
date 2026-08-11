@@ -68,6 +68,7 @@
 
 {{define "consent"}}{{template "pagetop" .}}
 <h1>authorize mcp client</h1>
+{{if .Error}}<p class="err">{{.Error}}</p>{{end}}
 <p>an mcp client wants to connect to pintr as <b>{{.Email}}</b>.</p>
 <form method="post" action="/authorize">
 {{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}

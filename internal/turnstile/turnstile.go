@@ -69,10 +69,14 @@ func (v *Verifier) verify(ctx context.Context, token string) bool {
 	defer resp.Body.Close()
 
 	var payload struct {
-		Success bool `json:"success"`
+		Success    bool     `json:"success"`
+		ErrorCodes []string `json:"error-codes"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return false
+	}
+	if !payload.Success {
+		log.Printf("turnstile: siteverify rejected token: %v", payload.ErrorCodes)
 	}
 	return payload.Success
 }

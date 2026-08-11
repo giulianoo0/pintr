@@ -44,7 +44,7 @@ type Provider struct {
 	// authorize endpoint needs a logged-in dashboard session and a consent
 	// page, both owned by web.
 	LookupSession func(*http.Request) (store.SessionInfo, bool)
-	RenderConsent func(http.ResponseWriter, store.SessionInfo, url.Values)
+	RenderConsent func(w http.ResponseWriter, session store.SessionInfo, query url.Values, notice string)
 
 	// Analytics counts anonymous events (nil disables it).
 	Analytics *analytics.Tracker
@@ -301,7 +301,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	// GET renders consent; POST (with a valid CSRF token) grants the code.
 	if r.Method != http.MethodPost {
-		p.RenderConsent(w, session, r.URL.Query())
+		p.RenderConsent(w, session, r.URL.Query(), "")
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(query.Get("csrf")), []byte(session.CSRF)) != 1 {
@@ -309,7 +309,10 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.VerifyHuman != nil && !p.VerifyHuman(r) {
-		http.Error(w, "verification failed — go back and complete the check, then click allow again", http.StatusBadRequest)
+		// Re-render the form instead of erroring: Turnstile tokens are
+		// single-use, so sending the user "back" to a page holding a spent
+		// token could never succeed. The POST form carries the oauth params.
+		p.RenderConsent(w, session, query, "verification failed — complete the check, then click allow again")
 		return
 	}
 

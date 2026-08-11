@@ -214,13 +214,15 @@ type consentPage struct {
 	basePage
 	Email  string
 	CSRF   string
+	Error  string
 	Hidden []hiddenField
 }
 
 // RenderConsent is the MCP OAuth consent screen. It is exported for the OAuth
 // provider's authorize endpoint (wired as a hook in app); the OAuth params
-// are echoed as hidden fields so the POST carries them back.
-func RenderConsent(w http.ResponseWriter, session store.SessionInfo, query url.Values) {
+// are echoed as hidden fields so the POST carries them back. A non-empty
+// notice re-renders the form after a failed captcha check with a fresh widget.
+func RenderConsent(w http.ResponseWriter, session store.SessionInfo, query url.Values, notice string) {
 	var hidden []hiddenField
 	for _, key := range []string{"client_id", "redirect_uri", "response_type", "state", "code_challenge", "code_challenge_method", "resource", "scope"} {
 		if value := query.Get(key); value != "" {
@@ -231,6 +233,7 @@ func RenderConsent(w http.ResponseWriter, session store.SessionInfo, query url.V
 		basePage: authedPage("authorize"),
 		Email:    session.User.Email,
 		CSRF:     session.CSRF,
+		Error:    notice,
 		Hidden:   hidden,
 	})
 }
