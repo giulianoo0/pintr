@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,13 +14,22 @@ import (
 )
 
 func newTestProvider(t *testing.T) *Provider {
+	p, _ := newTestProviderWithUser(t)
+	return p
+}
+
+func newTestProviderWithUser(t *testing.T) (*Provider, store.User) {
 	t.Helper()
 	st, err := store.New(filepath.Join(t.TempDir(), "pintr.db"), []byte("01234567890123456789012345678901"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return New("https://pintr.example", st)
+	user, err := st.CreateUser(context.Background(), "u@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New("https://pintr.example", st), user
 }
 
 // consentForm returns a valid consent POST for a freshly registered client.
@@ -41,21 +51,16 @@ func consentForm(t *testing.T, p *Provider, csrf string) url.Values {
 	}
 }
 
-// A failed captcha check must re-render the consent form (fresh widget, fresh
-// token) instead of a dead-end error page: Turnstile tokens are single-use, so
-// "go back and click allow again" replays a spent token and can never succeed.
-func TestConsentCaptchaFailureRerendersConsent(t *testing.T) {
-	p := newTestProvider(t)
-	session := store.SessionInfo{User: store.User{ID: "u1", Email: "u@example.com"}, CSRF: "csrf-tok"}
+// The consent POST needs no captcha token: the session is already the proof
+// of humanity (captcha-gated login), and a Turnstile check on this step kept
+// expiring mid-flow and broke MCP pairing. A valid CSRF-bound POST must issue
+// a code outright.
+func TestConsentPostIssuesCodeWithoutCaptcha(t *testing.T) {
+	p, user := newTestProviderWithUser(t)
+	session := store.SessionInfo{User: user, CSRF: "csrf-tok"}
 	p.LookupSession = func(*http.Request) (store.SessionInfo, bool) { return session, true }
-	p.VerifyHuman = func(*http.Request) bool { return false }
-
-	var gotNotice string
-	var gotQuery url.Values
-	p.RenderConsent = func(w http.ResponseWriter, _ store.SessionInfo, query url.Values, notice string) {
-		gotNotice = notice
-		gotQuery = query
-		w.WriteHeader(http.StatusOK)
+	p.RenderConsent = func(http.ResponseWriter, store.SessionInfo, url.Values, string) {
+		t.Error("valid consent POST should issue a code, not re-render")
 	}
 
 	form := consentForm(t, p, session.CSRF)
@@ -64,11 +69,15 @@ func TestConsentCaptchaFailureRerendersConsent(t *testing.T) {
 	rec := httptest.NewRecorder()
 	p.handleAuthorize(rec, req)
 
-	if gotNotice == "" {
-		t.Fatalf("expected consent re-render with a notice, got status %d body %q", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect with a code, got %d body %q", rec.Code, rec.Body.String())
 	}
-	if gotQuery.Get("client_id") == "" || gotQuery.Get("code_challenge") == "" {
-		t.Errorf("re-render must carry the oauth params so the form can be resubmitted, got %v", gotQuery)
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil || loc.Query().Get("code") == "" {
+		t.Fatalf("redirect must carry an authorization code, got %q", rec.Header().Get("Location"))
+	}
+	if loc.Host != "claude.ai" || loc.Query().Get("state") != "xyz" {
+		t.Errorf("redirect target wrong: %q", rec.Header().Get("Location"))
 	}
 }
 

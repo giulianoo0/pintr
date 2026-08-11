@@ -47,10 +47,10 @@ func (v *Verifier) Check(r *http.Request) bool {
 	if v == nil {
 		return true
 	}
-	return v.verify(r.Context(), r.FormValue("cf-turnstile-response"))
+	return v.verify(r.Context(), r.URL.Path, r.FormValue("cf-turnstile-response"))
 }
 
-func (v *Verifier) verify(ctx context.Context, token string) bool {
+func (v *Verifier) verify(ctx context.Context, path, token string) bool {
 	if token == "" {
 		return false
 	}
@@ -76,7 +76,7 @@ func (v *Verifier) verify(ctx context.Context, token string) bool {
 		return false
 	}
 	if !payload.Success {
-		log.Printf("turnstile: siteverify rejected token: %v", payload.ErrorCodes)
+		log.Printf("turnstile: siteverify rejected token on %s: %v", path, payload.ErrorCodes)
 	}
 	return payload.Success
 }
