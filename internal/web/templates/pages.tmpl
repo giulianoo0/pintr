@@ -61,7 +61,6 @@
 {{template "csrf" .CSRF}}
 <input type="hidden" name="state" value="{{.State}}">
 <textarea name="callback_url" rows="4" placeholder="http://localhost:1455/auth/callback?code=..." aria-label="callback url from localhost:1455" autofocus></textarea>
-{{template "turnstile"}}
 <button type="submit">finish linking</button>
 </form>
 {{template "pagebottom"}}{{end}}

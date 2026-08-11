@@ -15,12 +15,17 @@ import (
 	"github.com/giulianoo0/pintr/internal/turnstile"
 )
 
+// humanChecker abstracts the Turnstile verifier so tests can force a verdict.
+type humanChecker interface {
+	Check(*http.Request) bool
+}
+
 type Handlers struct {
 	store         *store.Store
 	provider      *oauth.Provider
-	assets        *assets.Store       // nil when storage is unconfigured
-	analytics     *analytics.Tracker  // nil when analytics is unconfigured
-	turnstile     *turnstile.Verifier // nil when Turnstile is unconfigured
+	assets        *assets.Store      // nil when storage is unconfigured
+	analytics     *analytics.Tracker // nil when analytics is unconfigured
+	turnstile     humanChecker       // nil when Turnstile is unconfigured
 	secureCookies bool
 
 	mu      sync.Mutex
@@ -40,6 +45,11 @@ func New(st *store.Store, provider *oauth.Provider, assetStore *assets.Store, tr
 		secureCookies: secureCookies,
 		pending:       map[string]pendingLink{},
 	}
+}
+
+// verifyHuman runs the captcha check; a missing verifier always passes.
+func (h *Handlers) verifyHuman(r *http.Request) bool {
+	return h.turnstile == nil || h.turnstile.Check(r)
 }
 
 // Register wires every browser-facing route into mux.
@@ -96,7 +106,7 @@ func (h *Handlers) handleSignup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "please reload the form and try again", http.StatusBadRequest)
 		return
 	}
-	if !h.turnstile.Check(r) {
+	if !h.verifyHuman(r) {
 		renderMessage(w, publicPage("create account"), "verification failed — please try again", "/signup", "try again")
 		return
 	}
@@ -132,7 +142,7 @@ func (h *Handlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "please reload the form and try again", http.StatusBadRequest)
 		return
 	}
-	if !h.turnstile.Check(r) {
+	if !h.verifyHuman(r) {
 		renderMessage(w, publicPage("log in"), "verification failed — please try again", "/login", "try again")
 		return
 	}

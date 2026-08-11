@@ -38,6 +38,13 @@ func (h *Handlers) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 	if !h.checkCSRF(w, r, session) {
 		return
 	}
+	// The captcha runs here, where the widget's token is seconds old. Checking
+	// at finish never worked: the OpenAI round-trip outlives a Turnstile token
+	// (~5 min, single-use), so every finish arrived with a dead token.
+	if !h.verifyHuman(r) {
+		renderMessage(w, authedPage("link chatgpt"), "verification failed — go back and try again", "/dashboard", "back to dashboard")
+		return
+	}
 
 	verifier, challenge, err := codex.NewPKCE()
 	if err != nil {
@@ -85,10 +92,8 @@ func (h *Handlers) handleLinkFinish(w http.ResponseWriter, r *http.Request) {
 	linkErr := func(msg string) {
 		renderMessage(w, authedPage("link chatgpt"), msg, "/dashboard", "back to dashboard")
 	}
-	if !h.turnstile.Check(r) {
-		linkErr("verification failed — start over from the dashboard and complete the check.")
-		return
-	}
+	// No captcha here: this step is reached only with a valid session, CSRF
+	// token, and the single-use state minted by the captcha-gated start.
 	if !exists || entry.userID != session.User.ID || time.Since(entry.createdAt) > codex.LoginTimeout {
 		linkErr("that link attempt expired or was not yours. start over from the dashboard.")
 		return
