@@ -38,14 +38,8 @@ func (h *Handlers) handleLinkStart(w http.ResponseWriter, r *http.Request) {
 	if !h.checkCSRF(w, r, session) {
 		return
 	}
-	// The captcha runs here, where the widget's token is seconds old. Checking
-	// at finish never worked: the OpenAI round-trip outlives a Turnstile token
-	// (~5 min, single-use), so every finish arrived with a dead token.
-	if !h.verifyHuman(r) {
-		renderMessage(w, authedPage("link chatgpt"), "verification failed — go back and try again", "/dashboard", "back to dashboard")
-		return
-	}
-
+	// No captcha here: starting only mints a PKCE challenge and a state. The
+	// check sits on finish, the step that actually adds an account.
 	verifier, challenge, err := codex.NewPKCE()
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -83,17 +77,23 @@ func (h *Handlers) handleLinkFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	linkErr := func(msg string) {
+		renderMessage(w, authedPage("link chatgpt"), msg, "/dashboard", "back to dashboard")
+	}
+	// The captcha guards this step, the one that actually adds the account. It
+	// runs before the state is consumed: a failed check must leave the attempt
+	// intact, or "submit again" would always hit "that link attempt expired".
+	if !h.verifyHuman(r) {
+		linkErr("verification failed — go back, complete the check, and submit again. reload the page first if the widget looks stale.")
+		return
+	}
+
 	state := r.FormValue("state")
 	h.mu.Lock()
 	entry, exists := h.pending[state]
 	delete(h.pending, state)
 	h.mu.Unlock()
 
-	linkErr := func(msg string) {
-		renderMessage(w, authedPage("link chatgpt"), msg, "/dashboard", "back to dashboard")
-	}
-	// No captcha here: this step is reached only with a valid session, CSRF
-	// token, and the single-use state minted by the captcha-gated start.
 	if !exists || entry.userID != session.User.ID || time.Since(entry.createdAt) > codex.LoginTimeout {
 		linkErr("that link attempt expired or was not yours. start over from the dashboard.")
 		return

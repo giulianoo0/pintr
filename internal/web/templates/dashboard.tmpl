@@ -22,13 +22,12 @@
 {{- if .HasUsage}}{{template "usage" .Windows}}<div class="fresh" data-age="{{.FreshAge}}" data-left="{{.FreshLeft}}"></div>{{else}}<div class="limits">limits unavailable</div>{{end -}}
 <div class="acct-ft">{{if not .IsDefault}}<form method="post" action="/accounts/default" style="display:inline">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link" aria-label="make {{.Email}} the default account">make default</button></form> · {{end}}<form method="post" action="/accounts/remove" style="display:inline" data-confirm="remove this account?">{{template "csrf" $.CSRF}}<input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link danger" aria-label="remove account {{.Email}}">remove</button></form></div></div>
 {{end}}
-<form method="post" action="/link/start" style="display:inline">{{template "csrf" .CSRF}}{{template "turnstile"}}<button type="submit">link a chatgpt account</button></form>
+<form method="post" action="/link/start" style="display:inline">{{template "csrf" .CSRF}}<button type="submit">link a chatgpt account</button></form>
 {{if .Accounts}} <form method="post" action="/usage/refresh" style="display:inline">{{template "csrf" .CSRF}}<button type="submit" class="link">refresh limits</button></form>
 <p class="muted">limits are cached ~30 min; refresh (or the get_usage tool) fetches fresh.</p>{{end}}
 </section>
 <section class="tabpane" id="p-runway">
-<p class="muted">runway powers the <code>generate_video</code> and <code>video_queue</code> tools. it has no oauth and no api key for the video tools, so pintr uses the same bearer token your logged-in runway tab holds. it is stored encrypted and only ever sent to runway.</p>
-{{with .Runway}}
+<p class="muted">runway powers the <code>generate_video</code> and <code>video_queue</code> tools. it has no oauth and no api key for the video tools, so pintr uses the same bearer token your logged-in runway tab holds. it is stored encrypted and only ever sent to runway.</p>{{with .Runway}}
 {{if .Connected}}
 <div class="acct"><div class="acct-hd"><b>{{.Username}}</b> <span class="muted">{{.Plan}}{{if .Email}} · {{.Email}}{{end}}</span></div>
 {{if .Expires}}<div class="limits">{{if .Expired}}<span class="err">token expired on {{.Expires}} — paste a fresh one below, generation will fail until you do</span>{{else if .ExpiringSoon}}<span class="err">token expires {{.Expires}} ({{.DaysLeft}} day(s) left) — paste a fresh one soon</span>{{else}}<span class="ok">token valid until {{.Expires}}</span> <span class="muted">· {{.DaysLeft}} day(s) left</span>{{end}}</div>{{end}}

@@ -63,31 +63,37 @@ func (h *linkHarness) post(t *testing.T, path string, form url.Values, handler h
 	return rec
 }
 
-// The captcha is checked when linking STARTS (dashboard button, token seconds
-// old), because the finish arrives only after the OpenAI round-trip — longer
-// than a Turnstile token lives.
-func TestLinkStartRejectsFailedCaptcha(t *testing.T) {
+// Starting a link only mints a PKCE challenge and a state — nothing is added
+// to the account — so the captcha sits on the finish step instead.
+func TestLinkStartSkipsCaptcha(t *testing.T) {
 	h := newLinkHarness(t, stubChecker(false))
 	rec := h.post(t, "/link/start", url.Values{}, h.handlers.handleLinkStart)
-	if !strings.Contains(rec.Body.String(), "verification failed") {
-		t.Fatalf("expected captcha rejection, got status %d body %q", rec.Code, rec.Body.String())
+	if strings.Contains(rec.Body.String(), "verification failed") {
+		t.Fatalf("start must not run the captcha check, got %q", rec.Body.String())
 	}
-	if len(h.handlers.pending) != 0 {
-		t.Error("no pending link attempt should be created on captcha failure")
+	if len(h.handlers.pending) != 1 {
+		t.Errorf("start should mint a pending link attempt, got %d", len(h.handlers.pending))
 	}
 }
 
-// The finish step must NOT require a captcha token: it is protected by
-// session + CSRF + the single-use state minted at start.
-func TestLinkFinishSkipsCaptcha(t *testing.T) {
+// The captcha guards the step that actually adds the account, so a failed
+// check must stop the code exchange.
+func TestLinkFinishRejectsFailedCaptcha(t *testing.T) {
 	h := newLinkHarness(t, stubChecker(false))
 	h.handlers.pending["st1"] = pendingLink{userID: h.userID, verifier: "v", createdAt: time.Now()}
 
 	rec := h.post(t, "/link/finish", url.Values{"state": {"st1"}, "callback_url": {"not-a-url"}}, h.handlers.handleLinkFinish)
-	if strings.Contains(rec.Body.String(), "verification failed") {
-		t.Fatalf("finish must not run the captcha check, got %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "verification failed") {
+		t.Fatalf("expected captcha rejection, got status %d body %q", rec.Code, rec.Body.String())
 	}
-	// It got past the captcha and failed on the bogus callback url instead.
+}
+
+// With the captcha satisfied, finish proceeds to validate the pasted callback.
+func TestLinkFinishRunsAfterCaptchaPasses(t *testing.T) {
+	h := newLinkHarness(t, stubChecker(true))
+	h.handlers.pending["st1"] = pendingLink{userID: h.userID, verifier: "v", createdAt: time.Now()}
+
+	rec := h.post(t, "/link/finish", url.Values{"state": {"st1"}, "callback_url": {"not-a-url"}}, h.handlers.handleLinkFinish)
 	if !strings.Contains(rec.Body.String(), "no code in it") {
 		t.Errorf("expected callback-url validation error, got status %d body %q", rec.Code, rec.Body.String())
 	}
