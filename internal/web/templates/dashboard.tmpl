@@ -27,7 +27,9 @@
 <p class="muted">limits are cached ~30 min; refresh (or the get_usage tool) fetches fresh.</p>{{end}}
 </section>
 <section class="tabpane" id="p-runway">
-<p class="muted">runway powers the <code>generate_video</code> and <code>video_queue</code> tools. it has no oauth and no api key for the video tools, so pintr uses the same bearer token your logged-in runway tab holds. it is stored encrypted and only ever sent to runway.</p>{{with .Runway}}
+<p class="muted">runway powers the <code>generate_video</code> and <code>video_queue</code> tools. it has no oauth and no api key for the video tools, so pintr uses the same bearer token your logged-in runway tab holds. it is stored encrypted and only ever sent to runway.</p>
+<p class="warn">heads up: this drives runway's own app api with your session token, which is not something runway offers or supports — your runway account may be rate-limited, restricted, or suspended for it, and that risk is yours. if you intend to automate generations, <a href="https://github.com/giulianoo0/pintr#host-it-yourself">host pintr yourself</a> on an account you can afford to lose.</p>
+{{with .Runway}}
 {{if .Connected}}
 <div class="acct"><div class="acct-hd"><b>{{.Username}}</b> <span class="muted">{{.Plan}}{{if .Email}} · {{.Email}}{{end}}</span></div>
 {{if .Expires}}<div class="limits">{{if .Expired}}<span class="err">token expired on {{.Expires}} — paste a fresh one below, generation will fail until you do</span>{{else if .ExpiringSoon}}<span class="err">token expires {{.Expires}} ({{.DaysLeft}} day(s) left) — paste a fresh one soon</span>{{else}}<span class="ok">token valid until {{.Expires}}</span> <span class="muted">· {{.DaysLeft}} day(s) left</span>{{end}}</div>{{end}}

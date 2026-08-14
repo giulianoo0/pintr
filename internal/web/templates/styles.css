@@ -47,7 +47,7 @@ button.danger{color:#f87171}
 table{width:100%;border-collapse:collapse;margin:.5rem 0}
 th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid #262626;font-size:.9rem}
 th{color:#888;font-weight:500}
-.err{color:#f87171}.ok{color:#4ade80}
+.err{color:#f87171}.ok{color:#4ade80}.warn{color:#fbbf24;font-size:.9rem}
 h2.danger{color:#f87171;margin-top:2.5rem}
 .danger-btn{background:#7f1d1d;color:#fff}
 .muted{color:#888;font-size:.85rem}
