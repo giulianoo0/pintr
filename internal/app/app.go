@@ -79,11 +79,12 @@ func ServeHTTP(addr string) {
 	}
 	verifier := turnstile.New()
 	if verifier != nil {
-		log.Print("turnstile enabled on signup/login/link (PINTR_TURNSTILE_* set)")
+		log.Print("turnstile enabled on signup/login/link/consent (PINTR_TURNSTILE_* set)")
 	}
 
 	provider := oauth.New(publicURL, st)
 	provider.Analytics = tracker
+	provider.VerifyHuman = verifier.Check
 	webHandlers := web.New(st, provider, assetStore, tracker, verifier, strings.HasPrefix(publicURL, "https://"))
 	// The authorize endpoint needs the browser session and the consent page,
 	// both owned by web; injecting them here keeps oauth free of cookies and

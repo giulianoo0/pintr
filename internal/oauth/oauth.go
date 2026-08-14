@@ -49,6 +49,10 @@ type Provider struct {
 	// Analytics counts anonymous events (nil disables it).
 	Analytics *analytics.Tracker
 
+	// VerifyHuman, when set, gates the consent POST behind a captcha check
+	// (Cloudflare Turnstile, wired in app). Nil skips the check.
+	VerifyHuman func(*http.Request) bool
+
 	mu        sync.Mutex
 	usedCodes map[string]int64 // code jti -> expiry unix; makes codes single-use
 }
@@ -304,10 +308,14 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad csrf token", http.StatusBadRequest)
 		return
 	}
-	// No captcha here: the session itself was obtained through the
-	// captcha-gated login, and CSRF binds the POST to that session. A
-	// Turnstile check on this step kept expiring mid-flow (single-use tokens,
-	// ~5 min lifetime, Safari throttling) and broke MCP pairing outright.
+	if p.VerifyHuman != nil && !p.VerifyHuman(r) {
+		// Re-render the form instead of erroring: Turnstile tokens are
+		// single-use, so sending the user "back" to a page holding a spent
+		// token could never succeed. The POST form carries the oauth params.
+		p.RenderConsent(w, session, query, "verification failed — complete the check, then click allow again")
+		return
+	}
+
 	epoch, ok := p.store.TokenEpoch(r.Context(), session.User.ID)
 	if !ok {
 		http.Error(w, "internal error", http.StatusInternalServerError)

@@ -51,14 +51,48 @@ func consentForm(t *testing.T, p *Provider, csrf string) url.Values {
 	}
 }
 
-// The consent POST needs no captcha token: the session is already the proof
-// of humanity (captcha-gated login), and a Turnstile check on this step kept
-// expiring mid-flow and broke MCP pairing. A valid CSRF-bound POST must issue
-// a code outright.
-func TestConsentPostIssuesCodeWithoutCaptcha(t *testing.T) {
+// A failed captcha check must re-render the consent form (fresh widget, fresh
+// token) instead of a dead-end error page: Turnstile tokens are single-use, so
+// "go back and click allow again" replays a spent token and can never succeed.
+func TestConsentCaptchaFailureRerendersConsent(t *testing.T) {
 	p, user := newTestProviderWithUser(t)
 	session := store.SessionInfo{User: user, CSRF: "csrf-tok"}
 	p.LookupSession = func(*http.Request) (store.SessionInfo, bool) { return session, true }
+	p.VerifyHuman = func(*http.Request) bool { return false }
+
+	var gotNotice string
+	var gotQuery url.Values
+	p.RenderConsent = func(w http.ResponseWriter, _ store.SessionInfo, query url.Values, notice string) {
+		gotNotice, gotQuery = notice, query
+		w.WriteHeader(http.StatusOK)
+	}
+
+	form := consentForm(t, p, session.CSRF)
+	req := httptest.NewRequest(http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	p.handleAuthorize(rec, req)
+
+	if gotNotice == "" {
+		t.Fatalf("expected consent re-render with a notice, got status %d body %q", rec.Code, rec.Body.String())
+	}
+	if gotQuery.Get("client_id") == "" || gotQuery.Get("code_challenge") == "" {
+		t.Errorf("re-render must carry the oauth params so the form can be resubmitted, got %v", gotQuery)
+	}
+	// The re-render needs the callback origin too, or the retry hits the CSP
+	// wall that silently swallowed the redirect in the first place.
+	if gotQuery.Get("redirect_uri") == "" {
+		t.Error("re-render must carry redirect_uri so the consent CSP allows the callback")
+	}
+}
+
+// With the captcha satisfied (or unconfigured), a CSRF-bound consent POST
+// issues the code.
+func TestConsentPostIssuesCode(t *testing.T) {
+	p, user := newTestProviderWithUser(t)
+	session := store.SessionInfo{User: user, CSRF: "csrf-tok"}
+	p.LookupSession = func(*http.Request) (store.SessionInfo, bool) { return session, true }
+	p.VerifyHuman = func(*http.Request) bool { return true }
 	p.RenderConsent = func(http.ResponseWriter, store.SessionInfo, url.Values, string) {
 		t.Error("valid consent POST should issue a code, not re-render")
 	}
