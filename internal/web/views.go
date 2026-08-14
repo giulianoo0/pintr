@@ -133,7 +133,12 @@ const siteScript = `(function(){
 // Plausible script + its init stub and the Cloudflare Turnstile widget.
 // Inline scripts are allowed by hash only, so inline handlers are blocked;
 // forms use data-confirm instead of onsubmit.
-var pageCSP = func() string {
+var pageCSP = buildCSP("")
+
+// buildCSP assembles the page policy. extraFormAction appends sources to
+// form-action for the OAuth consent page (see consentCSP); everything else
+// passes "".
+func buildCSP(extraFormAction string) string {
 	hash := func(s string) string {
 		sum := sha256.Sum256([]byte(s))
 		return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
@@ -158,28 +163,54 @@ var pageCSP = func() string {
 	}
 	return "default-src 'none'; script-src " + scriptSrc + "; " +
 		"style-src 'unsafe-inline'; font-src 'self'; " +
-		"img-src 'self' data:; " + connectSrc + frameSrc + "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-}()
+		"img-src 'self' data:; " + connectSrc + frameSrc +
+		"form-action 'self'" + extraFormAction + "; base-uri 'none'; frame-ancestors 'none'"
+}
 
-func securePageHeaders(w http.ResponseWriter) {
+// consentCSP is the page policy with the MCP client's callback origin added to
+// form-action. The consent form posts to /authorize, which answers with a 302
+// carrying the authorization code to the client's redirect_uri — and browsers
+// match form-action against the redirects that follow a form submission, not
+// just its immediate action. Under a bare 'self' that redirect is dropped
+// silently: the client's loopback listener never sees the code and pairing
+// hangs forever (this is what broke `opencode2 mcp auth pintr`).
+//
+// Granting only the origin costs nothing: handleAuthorize has already checked
+// redirectURI against the client's registered list before rendering, so this
+// allows exactly the hop the flow is about to make.
+func consentCSP(redirectURI string) string {
+	target, err := url.Parse(redirectURI)
+	if err != nil || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
+		return pageCSP
+	}
+	return buildCSP(" " + target.Scheme + "://" + target.Host)
+}
+
+func securePageHeaders(w http.ResponseWriter, policy string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Authenticated, user-specific pages: don't let a proxy cache them, and
 	// don't let another site frame them (clickjacking on the consent page).
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Content-Security-Policy", pageCSP)
+	w.Header().Set("Content-Security-Policy", policy)
 }
 
 // renderTemplate executes a named page template into a buffer first, so a
 // template error becomes a clean 500 instead of a half-written page.
 func renderTemplate(w http.ResponseWriter, name string, data any) {
+	renderTemplateCSP(w, name, data, pageCSP)
+}
+
+// renderTemplateCSP renders under a specific policy (the consent page widens
+// form-action; see consentCSP).
+func renderTemplateCSP(w http.ResponseWriter, name string, data any, policy string) {
 	var buf bytes.Buffer
 	if err := pageTemplates.ExecuteTemplate(&buf, name, data); err != nil {
 		log.Printf("render %s: %v", name, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	securePageHeaders(w)
+	securePageHeaders(w, policy)
 	_, _ = w.Write(buf.Bytes())
 }
 
@@ -229,11 +260,11 @@ func RenderConsent(w http.ResponseWriter, session store.SessionInfo, query url.V
 			hidden = append(hidden, hiddenField{Name: key, Value: value})
 		}
 	}
-	renderTemplate(w, "consent", consentPage{
+	renderTemplateCSP(w, "consent", consentPage{
 		basePage: authedPage("authorize"),
 		Email:    session.User.Email,
 		CSRF:     session.CSRF,
 		Error:    notice,
 		Hidden:   hidden,
-	})
+	}, consentCSP(query.Get("redirect_uri")))
 }
